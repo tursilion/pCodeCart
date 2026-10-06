@@ -1,0 +1,59 @@
+DSR search one - seems to just record a list of "valid" cards, finds none in Classic99
+
+2066    1e00    sbz 0
+2068    022c    ai r12,>ff00
+        ff00
+206c    028c    ci r12,>0f00
+        0f00
+2070    130c    jeq >208a               result of search in Classic99 is all zeros
+2072    1d00    sbo 0
+2074    9820    cb @>2cac,@>4000        AA test
+        2cac
+        4000
+207a    16f5    jne >2066
+207c    c020    mov @>400c,r0           this is beyond the standard header. It's 0 on the TI disk and Classic99 disk.
+        400c
+2080    13f2    jeq >2066
+2082    c84c    mov r12,@>2986(R1)      R1 was zero...
+2086    05c1    inct r1
+        
+DSR search two:
+
+341e 020c li r12, >1f00
+     1f00
+3422 1e00 sbz 0
+3424 c1c7 mov r7,r7
+3426 1602 jne >342c
+3428 06a0 bl @>337e
+     337e
+337e 06ca swpb r10
+3380 098a srl r10,8
+3382 020c li r12,>1000
+     1000
+3386 1d00 sbo 0
+3388 0203 li r3,>4000
+     4000
+338c 9813 cb *r3,@>2cac     aa test
+     2cac
+3390 1309 jeq >33a4
+3392 1e00 sbz 0
+3394 022c ai r12,>0100
+     0100
+3398 028c ci r12,>2000
+     2000
+339c 16f4 jne >3386
+
+33A4 
+- reads subprogram list ptr from 400A (classic99 gets 401A)
+- adds 2, and gets the entry address (Classic99 gets >4820 (subprogram 16))
+- adds 1, and tests that the length is '1'
+- adds 1, tests that the name value matches VDP >0012 (?) (Classic99 does)
+- tests for the whole length, but the length was '1' in the first pass
+- copies the entry to VDP at >0000
+- it then calls that subprogram, which in Classic99 is a sector read - this all matches the real controller
+- it appears that the card address is just assumed to stay in GPLWS R12
+
+
+
+
+

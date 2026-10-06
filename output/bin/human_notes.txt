@@ -1,0 +1,69 @@
+We need to reserve from 0x3A00 to 0x3FFF
+
+E editor
+- enter no file
+- Q quit
+- E exit back to menu
+
+F file (all actions will be very slow! Give time to respond before next key) (crashes)
+ - 'V' (volumes - lists available volumes)
+ - 'L' (dir), '#4' (sequence gives list of files on disk)
+ - Q (back to menu)
+ 
+D debug
+ 
+H Halt
+
+ 
+#1 is the console
+#2 is systerm 
+#4 is the floppy (I think 5 and 6 are the next two)
+#14 is the OS
+#31 is tape
+
+-- but I am missing support and sprite libraries... SYSTEM.LIBRARY from compiler disk.
+
+program hello;
+begin
+writeln('Hello world');
+end.
+
+
+Program benchmrk;
+uses support,sprite;
+var
+x,y,cnt : integer;
+begin
+page(output);
+set_screen(2);
+set_spr_size(1);
+set_spr_attribute(1,42,2,0,1,1,0,0);
+cnt := 100;
+while cnt > 0 do
+begin
+for x := 1 to 240 do
+set_spr_attribute(1,42,2,0,1,x,0,0);
+for y := 1 to 176 do
+set_spr_attribute(1,42,2,0,y,240,0,0);
+for x := 240 downto 1 do
+set_spr_attribute(1,42,2,0,176,x,0,0);
+for y := 176 downto 1 do
+set_spr_attribute(1,42,2,0,y,1,0,0);
+cnt := cnt - 1;
+end;
+end.
+
+
+------------
+
+POSSIBLE pCode BUGS (reproduces on base, I don't have real hardware):
+
+Enter filer (F)
+- press G to get
+- control-C to back out (code 3)
+- press G again (hangs here instead of accepting input)
+
+There are other sequences of keys you can press that hang. It's not very good in that respect.
+
+One with Get and 'Throw away current workspace?' not waiting that I can not reproduce.
+Editor hang on certain insert sequences that I can not reproduce.

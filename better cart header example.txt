@@ -1,0 +1,29 @@
+* cartridge header here - we dont expect a normal startup entry
+* We can reserve 46 bytes for the header on every page - that must take us to the bank switch!
+    aorg >6000
+    
+* because many bytes in the standard header are unused, and location is well known,
+* we store our init data there. That way the CRT length can change without needing
+* to change the elf2cart tool
+    data 0xaa01,0x0100      * header, version, [program count, unused] - [] used as data start in RAM
+    data 0x0000,_prog       * [power up list], program list - [] used as data address in ROM
+    data 0x0000,0x0000      * [DSR list], [subprogram list] - [] used as data size, [] then is bss start
+    data 0x0000,0x0000      * not standard header - bss length, fixed program start
+
+* program list
+_prog:
+    data 0x0000             * next program
+    data _start             * entry point
+    byte 20                 * length of following name
+    text 'SUPER SPACE ACER ''24'
+    even
+
+* 42 bytes used till this point (note title length!)
+* Pad the above if necessary to get to 42 bytes so the cartridge headers work.
+
+* Entry point for C runtime initilization code
+*
+* This will set initial values for data memory and otherwise create
+* the conditions needed for the C environment
+_start:
+  clr @>6000          * force bank switch to the first page - must end at exactly 46 bytes!

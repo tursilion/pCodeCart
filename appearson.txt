@@ -1,0 +1,100 @@
+The p-code card has 12 K ROM and eight GROM chips (48 K), as far as I can remember.
+
+Also, it must be able to let all other startup routines execute, and then it should take over before the normal operating system does. The p-code card accomplishes this by having CRU-address 1F00H, so it's the last card polled in the box.
+
+The p-code GROM read address is somewhere near 5FFFH (don't remember exactly without checking the documents), but the PME is designed to run code out of VDP RAM, ordinary RAM and GROM just as well, so that's just a question about changing a pointer.
+
+---
+
+On the 99/4A, there are two code pools. The primary one is in VDP RAM. All segments are loaded there, if they fit. If they are too large, or the main code pool is full, or they contain assembly code, then the secondary code pool, which resides in high memory expansion, is used.
+
+Thus the PME (p-machine emulator) must be able to run code in VDP RAM as well as in CPU RAM. And finally, the PME can run p-code on the p-code card. Actually, the PME has a memory source pointer, which points to the read address (VDP read address or p-code GROM read address), to tell it where to run from. If that pointer is zero, it runs from CPU memory, not memory mapped memory. So executing the code from a memory bank that's read via some auto-incrementing port is easy. The trick is to convince the system to load the code there.
+
+Low memory expansion is used to hold the 80-column screen and various routines needed for I/O, for example, since the p-code card must be turned off to allow access to things like serial ports and the diskettes.
+
+The RAM at 8300H holds the core of the PME, p-system WS (8380H) etc.
+
+---
+
+The p-system has a different file format, but it accesses disks using the sector read and write subprograms, that are supposed to be on the disk controller in all cases, so that shouldn't be any problem.
+
+The card itself is just another PEB card. CRU base address is 1F00H.
+
+The card has 12 K ROM. The first half (4000H - 4FFFH) is always the same. The second half (5000H - 5FFFH) is bank switched with CRU bit 1F80H.
+
+The GROM chips are handled just like any other GROMs, but at different addresses. Note that the CRU bit 1F00H must be set to access these GROMs.
+
+PGRMRD 5BFC Read data
+PGRMRA 5BFE Read address
+PGRMWD 5FFC Write data (Not used, since there's no GRAM here).
+PGRMWA 5FFE Write address
+
+Note that TI selected to keep the 400H spacing between read and write as they have for other GROMs, probably to be able to use the same routines for accessing them. Unlike the other cases, the p-code card decodes these addresses fully. Hence it's only these four words that don't access ROM on the p-code card. The assembly routines in the ROM simply jumps over these addresses.
+
+The GROMs on the p-code card contain various data and assembly code, which is transferred to RAM (primarily low memory expansion) when the system starts up. The GROMs also contain the OS: volume. There are 8 GROM chips on the card, each with 6 K bytes of data. So it uses the full GROM address space as defined by these chips, which don't fill their entire 8 K slot. GRAM devices like Maximem or GRAMcracker can do that, but not this card.
+
+The PME can execute code from RAM, VDP RAM or these GROMs alternatively. R13 and R15 in the PascalWS (at 8380H) are used to keep track of where the currently executing code is located. But that's handled by the system itself.
+
+---
+
+The real card protrudes a bit on the rear side of the PEB. There's a switch, with which the card can be disabled, so it doesn't reply to being turned on by CRU bit 1F00H. Thus you don't have to wait through the p-system startup to be able to press Halt, and then come to the normal operating system.
+
+If you still do that, the p-code card stores the letters 'NO' at 38FAH in low memory expansion when it exists properly after a Halt command. As long as that word hasn't been overwritten, it will not take over on a re-boot of the 99/4A. It will just run a small part of its power up routine, then exit. When the system is running, this location contains 'GO' instead. The p-system does the same kind of restart after a run-time error, so by looking at this word in memory, it will know if the user stopped it (remain stopped) or if it halted due to an error (restart again).
+
+So it should be possible to select if the p-code card should run or not by simply let the emulator store 'NO' or 'GO' at memory location 38FAH. Then all the rest that's needed is already on the card.
+
+---
+
+The system disk has to be in the first drive (called #4: in the p-system). There you have your SYSTEM.LIBRARY file, SYSTEM.PASCAL and SYSTEM.CHARAC. The latter allows you to give the p-system decent character definitions by default. With DS/DD disks, you can have the other system files, like SYSTEM.EDITOR, SYSTEM.COMPILER, SYSTEM.FILER, SYSTEM.ASSMBLER and SYSTEM.LINKER on the root volume as well. If you have a real system with smaller disks, you may have to place them on a secondary disk.
+
+Remember that the root volume can always be referenced by *, that the prefix volume is :, and that you can set that default prefix to a disk or drive by Xecute p=#5, for example, which will make drive 2 (unit #5:) the default one.
+
+Also remember the wildcard, where myproj?.? will reference files like myproj.text, myproj1.text, myproj2.text and myproj.code.
+
+Also note that to use diskettes with the p-system, they first have to be formatted, either outside the p-system (Disk Manager or whatever), or inside the p-system using the utility program dformat.code. But regardless of which, the disks must then have their p-system disk catalog installed, something which is done by the Filer's Zero command. This and the fact that the original dformat program can't handle double density confuses beginners a lot.
+
+Note that p-system volumes are limited to 77 files, and that the files must always be contiguous. More efficient but less flexible than the normal files system on the 99. You can defragment disks manually by using the Krunch command in the Filer. You can also create holes for larger files with that command.
+
+Having a duplicate file directory on disks that frequently change content can be a good idea. If your directory gets corrupted (you open the wrong drive door, your PEB looses contact with the console), then you can just copy the secondary directory in, and have all but the last activity back in good order again.
+
+---
+
+The major releases, where the definitions of the p-codes are different, have different leading roman numerals, like II.3 or IV.0. Smaller changes to the operating system are differentiated by the arabic digit after the period, like IV.0 vs. IV.1.
+
+(TI is IV.0)
+
+---
+
+Got to page 4 - https://atariage.com/forums/topic/193355-pascal-on-the-994a/page/4/#comments
+
+--- 
+
+NEW AS OF 2026-10-01
+
+Anyway, coming to your memory question.
+
+At STRTBUF (3900H) there's a 1790 byte area, reaching down to the start of the p-code card ROM at 4000H, which I've not found is used for anything. The specific address 3900H is cleared during startup, but that's it.
+
+In the most recent disassembly I posted on AtariAge there's a comment about that the area is used at startup. But I've removed that comment now, since it seems it's only 3900 that's cleared, for some reason. Then nothing below is used anywhere I've seen. My own guess is that they at some time planned to use it, maybe as some buffer for GROM data transfer or something, but abandoned that idea. The two blocks of data that are fetched from the GROM depository are both transferred directly to the RAM where they are used.
+
+But that comment dates all the way back to when disassembly and figuring out what was going on was done by printing out the disassembly, then tracing it by hand. Now I could run it through Classic99 and see what's going on. I don't think there's a way to fill a memory area in Classic99 with some specific character? But I can write a program to do that and run it, then look at memory and see if it's still the same after doing other things.
+
+So to summarize, if you use memory from 3902 to 4000, I think you are safe. Or you could start at 3A00 or whatever, to be even more safe.
+
+====
+
+I've understood that TI took the card route instead of the cartridge one, due to that they needed 48 K stuffed in GROM and they couldn't fit that into a cartridge, since it takes all eight of them and the console already has three.
+
+When transferring data from GROM the p-system BIOS checks all the time if it has reached "the edge" (end of 6K GROM space) and if so adds the GROM "address jump" before it continues with the next GROM chip. But when the PME is executing p-code it just fetches the next one. When there's a branch it will re-load the address via the LOADADDR procedure (look in my disassembly) and then continue executing p-code.
+
+The GROM on the p-code card contains the OS: volume ("disk drive" #14) and in the space after that one the code and data that's transferred to RAM on startup is hiding. 
+
+====
+
+The standard p-code card hosts the OS: volume in the GROMs. The operating system file SYSTEM.PASCAL sits in blocks 6-100. That's 47.5 Kbytes, so requires access to all eight GROMs, depending on which part of the file you want to access. Code segments like SMALLCOMMAND and COMMANDIO are in the later part, beyond the first five GROMs. They are handling commands given to the system.
+
+Note that the p-system doesn't load blocks from GROM into RAM to execute them, but runs the p-code where it is. Hence a branch that happens to cross a GROM border is a bit more tricky, if the new GROM chip has a different access address.
+
+The PME runs with workspace at 8380. R15 is the memory type flag. It's 1 if the code is in GROM, 0 for CPU RAM and -1 (FFFF) for VDP RAM. Then the address pointer is in R13. It should be the GROM read data address you have there. As I wrote above the new address after a jump instruction is set up by LOADADDR. That procedure for sure must be different if code executed from GROM suddenly may change GROM read data address. (Note: this does not mean code runs from one GROM into the next one. The top 2k of each GROM space is garbage that must always be jumped across.)
+
+Now I don't know which GROM addresses you use, but the p-system is as standard expecting that there could be GROM devices accessible at all the GROM library addresses in the range 9800 - 981C. They are defined as being volumes #15 to #30. 

@@ -1,0 +1,583 @@
+Card starts on ROM powerup routine. Enters at >4810
+
+Bank switched ROM like XB - >4000 is fixed, >5000 is banked. ROM files have the same first 4k for this.
+- move ROMs to cart space (>6000)
+- relocation needed
+
+Banking done by CRU.
+
+Card is mapped at CRU >1F00.
+-Code that turns on >1F00 needs to be disabled (though it won't hurt anything...)
+-Code that sets bit 4 needs to be changed to paging code
+
+GROMs operate at four /specific/ addresses: >5BFC (r/dat), >5BFE (r/adr), and >5FFE (w/adr) 
+- (write data is not used). 
+
+GROMs do not contain GPL code, they contain P-Code file systems and P-Code code.
+    - this seriously implies that the whole system could be adapted to run from banked ROM only
+    - maybe we should just search and see if there is a generic GROM copy function that could
+      be adapted? If we can just make a 128k cartridge hold everything, we'd be much better off.
+
+Startup:
+-Sets >1F00 to active from RAM location >208E (post finishing the powerup?)
+   2068  022C  ai   R12,>ff00              (22)
+         FF00
+   206C  028C  ci   R12,>0f00              (22)
+         0F00
+   2070  130C  jeq  >208a                  (12)
+   2072  1D00  sbo  >0000                  (16)
+   2074  9820  cb   @>2cac,@>4000          (50)
+         2CAC
+         4000
+   207A  16F5  jne  >2066                  (14)
+   2066  1E00  sbz  >0000                  (16)
+   2068  022C  ai   R12,>ff00              (22)
+         FF00
+   206C  028C  ci   R12,>0f00              (22)
+         0F00
+   2070  130C  jeq  >208a                  (14)
+   208A  020C  li   R12,>1f00              (20)
+         1F00
+   208E  1D00  sbo  >0000                  (16)
+
+- Next we have a bank change from RAM >3544:
+   534C  A020  a    @>2ae2,R0              (16)
+         2AE2
+   5294  0603  dec  R3                     (34)
+   5298  1014  jmp  >52c2                  (20)
+   529C  1613  jne  >52c4                  (38)
+   52A0  15FC  jgt  >529a                  (20)
+   52A4  C148  mov  R8,R5                  (38)
+   52A8  06A0  bl   @>4144                 (34)
+         4144
+   52AC  0582  inc  R2                     (34)
+   52B0  C200  mov  R0,R8                  (18)
+   518C  2AF2  xor  *R2+,R11               (54)
+   5192  0541  inv  R1                     (24)
+   3510  06A0  bl   @>353c                 (28)
+         353C
+   353C  C80C  mov  R12,@>29a4             (38)
+         29A4
+   3540  020C  li   R12,>1f80              (20)
+         1F80
+   3544  1E00  sbz  >0000                  (16)
+
+-Another at >3534:
+   47A2  0603  dec  R3                     (14)
+   47A4  16FC  jne  >479e                  (12)
+   47A6  0380  rtwp                        (18)
+   20E8  064A  dect R10                    (14)
+   20EA  C6A0  mov  @>2d96,*R10            (46)
+         2D96
+   20EE  06A0  bl   @>34dc                 (28)
+         34DC
+   34DC  C820  mov  @>40b6,@>29a6          (54)
+         40B6
+         29A6
+   34E2  C80B  mov  R11,@>2ada             (38)
+         2ADA
+   34E6  06A0  bl   @>352c                 (28)
+         352C
+   352C  C80C  mov  R12,@>29a4             (38)
+         29A4
+   3530  020C  li   R12,>1f80              (20)
+         1F80
+   3534  1D00  sbo  >0000                  (16)
+
+-Card on at >33E6
+   33C0  0209  li   R9,>8c02               (24)
+         8C02
+   33C4  06C5  swpb R5                     (22)
+   33C6  D645  movb R5,*R9                 (38)
+   33C8  06C5  swpb R5                     (22)
+   33CA  D645  movb R5,*R9                 (38)
+   33CC  C148  mov  R8,R5                  (30)
+   33CE  0985  srl  R5,8                   (40)
+   33D0  9D29  cb   @>fbfe(R9),*R4+        (56)
+         FBFE
+   33D4  16EB  jne  >33ac                  (12)
+   33D6  0605  dec  R5                     (22)
+   33D8  16FB  jne  >33d0                  (12)
+   33DA  1E00  sbz  >0000                  (20)
+   33DC  C24C  mov  R12,R9                 (30)
+   33DE  022A  ai   R10,>0100              (30)
+         0100
+   33E2  020C  li   R12,>1f00              (24)
+         1F00
+   33E6  1D00  sbo  >0000                  (20)
+   
+CRU Tweaks:
+Seems to always be very explicit, and all from RAM:
+
+CARD OFF:
+	020C  li   R12,>1f00              (24)
+	1F00
+	1E00  sbz  >0000                  (20)
+	
+CARD ON:
+	020C  li   R12,>1f00              (24)
+	1F00
+	1D00  sbo  >0000                  (20)
+
+BANK 0:
+	020C  li   R12,>1f80              (20)
+	1F80
+	1E00  sbz  >0000                  (16)
+
+BANK 1:
+	020C  li   R12,>1f00              (24)
+	1F00
+	1D00  sbo  >0000                  (20)
+
+Card ON:
+208E
+33E6
+3482
+
+Card OFF:
+2068
+33f2
+3422
+
+Bank 0:
+3544
+
+Bank 1:
+3534
+
+
+Searching for the above sequences has hits in the GROM (0 hits in ROMs):
+Card OFF: 4 times
+Card ON:  4 times
+Bank 0:   1 times
+Bank 1:   1 times
+
+Card ON/OFF: replace with 1002 1000 1000 (JMP $+2,NOP,NOP)
+Bank 0: replace with 04E0 6000 1000 (CLR @>6000,NOP)
+Bank 1: replace with 04E0 6002 1000 (CLR @>6002,NOP)
+
+------------------
+
+GROM access:
+DATA:
+	Scratchpad function access >5BFC through R13
+	ROM at >404C accesses it through R4 pointer set to >5FFE at 4048 (too many hits to keep tracing)
+	
+WRADR:
+	ROM at >4058 writes through R4 pointer set to >5FFE as above
+	ROM at >59B4 writes through R5 pointer set to >5FFE in ROM here:
+
+   5904  C16C  mov  @>2cfa(R12),R5         (34)
+         2CFA
+   5908  130B  jeq  >5920                  (12)
+   590A  0225  ai   R5,>0402               (22)	
+
+Init routine loaded to RAM at >2360 sets base pointer in R13 (AFTER the above)
+R13 seems to be generally used after that.
+   2354  C120  mov  @>2d96,R4              (34)
+         2D96
+   2358  C804  mov  R4,@>2b72              (38)
+         2B72
+   235C  C364  mov  @>2cfa(R4),R13         (34)
+
+Only a few init locations - a little more tracing need since the data is coming from RAM (so likely from GROM)
+
+The main 'gotcha' is that the cartridge version will need to overwrite the console GROMs in order to have everything... but the UberGROM could be configured to do that - to leave it off until the program is started...
+
+mizapf makes the interesting suggestion of just moving the pCode GROMs to cartridge space addresses. Since the DSR ROMs already skip over the GROM addresses, if we could directly remap without changing those areas, that would give us the full 64k. An UberGROM could then provide the GROM access and a 16k EPROM could provide the banked cartridge.
+
+Still need to relocate the ROM from >4000 to >6000, too. Can do same trick as Arcturus.
+
+Oddly, it seems to poke around in the console GROMs a lot, at least at startup, but I don't know why. The GROM accesses look completely meaningless..?? (apersson850 notes that it uses the console GROM floating point routines.) This would make the separate space more important.
+
+---- 
+
+some separate notes
+
+pCode emulation:
+- custom GROM access address with 64k of GROM available (really 0xF800, so 62k, but that's cause
+  of the normal 6k GROM padding).
+    - does NOT use the normal GROM access, so no conflict with the console GROMs
+    - rpcodebyte, wpcodebyte
+    - 0x5bfc = Read GROM DATA
+    - 0x5bfe = Read GROM Address
+    - 0x5ffc = Write GROM DATA
+    - 0x5ffe = Write GROM Address
+    - only if DSR ROM is active, and only those explicit addresses (odd is ignored)
+
+- CRU at >1F00
+    - bit 0x00 enables/disables the DSR at >4000
+    - bit 0x80 does a bank switch (nDSRBank[0xf]), bit '1' to bank 2, bit '0' to bank 1
+    - There is a full 16k of DSR ROM data. In standard TI format the first 4k is the same, but this is simpler.
+
+- In theory, the GROMs are used in such a way that it would be possible to just make them
+  work on multiple bases. This would take additional ROM code to track bases but would then work anywhere...
+  Otherwise, we need some extra hardware.
+
+- The AVR is too slow to do the decode in software. PI might be fast enough. ;)
+
+- otherwise we need decode like so:
+
+1bfc-1bff   1 1x11 1111 11xx
+1ffc-1fff   1 1x11 1111 11xx - 10 bits ANDed
+
+74LS133 is a 13-input NAND gate, this would work.
+Since the AVR uses software to select, we don't care if it's AND or NAND.. but for the ROM chip to work, we need the opposite... 
+
+
+So, to make an Ubergrom cart work with this:
+- relocate the DSR ROM to run at >6000
+- necessary to add a cartridge header, it won't autostart
+- find the CRU bank switching, and convert to ROM writes (CRU not available on all consoles)
+- move the four GROM access ports (probably only 3) to cartridge space
+- Ubergrom modified to support all 64k, including address read back
+
+- this might be a good PI zero project. We could fit the ROM and GROM onboard and let it serve everything.
+
+====================
+
+On the idea that GROM data is only copied, and never executed.
+
+So, setting the address is a minimum of 6 code bytes, and could be replaced with a single MOV if we can find a safe address to store it at.
+
+    ie: mov r4,@>FFFE
+
+Fetching a byte of data (safest to continue by byte, though words where possible might be faster) is always at least a register and offset, so 4 bytes. But we need to fetch the address, fetch FROM the address, and increment, which is much more... 10 bytes minimum
+
+    ie: mov @>FFFE,r4
+        movb *r4+,R0
+        mov r4,@>fffe
+
+When there's a word access, it can be smaller. But otherwise we're going to need to branch. It might not always be safe to BL (r11 might be in use). I suppose we could use specific branches for each function.
+
+Unsurprisingly, the ROM is pretty full. it does have a proper header (needed for the autostart anyway). There's 20. bytes free in the C bank and almost 48 in the D bank. 4 bytes is enough for the absolute B @>xxxx.
+
+I think the custom PI cart with the ROM and GROM emulation is the best way to do it.
+
+---
+
+In the thoughts below, I use >FFFE to store the address, but note that is not an address I've proven safe.
+I know that it's always safe to fetch the data without checking for end of page, because the GROMs are
+only >1800 bytes long so the code always takes that empty 2k into account.
+
+But, I would need scratchpad space to store a copy loop, that would be the only way to copy from paged ROM.
+Assuming I can always find a safe place to store R11, I could use bl @>8380, data target, data length. I'd
+also need a way to do it via registers directly...
+
+This would also need to filter the address, add the ROM offset, set the ROM bank, and set the ROM bank back!
+That's actually starting to be a lot of code... especially cause we don't know which bank we were called from.
+
+... and you thought GROMs were slow. ;)
+
+44 bytes, three registers plus R11.
+
+en1 mov *r11+,r1    target
+    mov *r11+,r2    count
+en2 mov @>fffe,r0   src
+    mov r0,r3
+    srl r0,13       gives us the top three bits for the page
+    sla r0,1        times 2 for bank
+    ai r0,>6000     cart bank
+    clr *r0         set it
+    mov @>fffe,r0   src again
+    a r2,@>fffe     and add the bytes we're accessing
+    andi r0,>1800   must be in this range
+    ai r0,>6000     and now lives in this range
+lp  movb *r0+,*r1+
+    dec r2
+    jne lp
+    b *r11
+
+---
+
+This startup code does a dummy GROM read, then loads an address
+
+4044 02e0 lwpi >8380
+4046 8380
+4048 0204 li r4,>5ffe
+404c d0a4 movb @>fbfe(r3),r2    dummy read data     - nop nop
+404e fbfe
+4050 04e0 clr @>3900
+4052 3900
+4054 0202 li r2,>e804
+4056 e804
+4058 d502 movb r2,*r4           load address MSB    mov r2,@>fffe
+405a 06c2 swpb r2
+405c d502 movb r2,*r4           load address LSB    nop
+405e 06a0 bl @>4070
+4060 4070
+
+---
+
+4070.x seems to have a copy function - 4 bytes into r5,r6 (2000,251e on first pass)
+R4 has 5FFE. 4xxx is not banked, so this must be in both pages.
+
+4070    li r3,>0004
+        li r1,>838a
+4078    movb @>fbfe(r4),*r1+
+        dec r3
+        jne >4078               gets start and end RAM addresses
+        s r5,r6                 converts end to count
+        mov r5,*r5+          
+        dect r6                 count includes start and end
+        mov r6,*r5+
+        dect r6                 which is stored without the header
+408a    movb @>fbfe(r4),*r1+    copies the rest of the block
+        dec r6
+        jne >408a
+        b *r11
+        
+---
+
+Sub at 59b4.1. This time R5 has 5FFE, R6 has an address to read a word from.
+5xxx is banked, so this must in one or the other page...
+
+59b4    movb r6,*r5             set grom address
+        swpb r6
+        movb r6,*r5
+        swpb r6
+        movb @>fbfe(r5),r0      read first byte
+        swpb r0
+        movb @>fbfe(r5),r0      read second byte
+        swpb r0
+        b *r11                  return
+
+---
+
+584a.1. R5 and R6 set up as above. R7 has count. There's more needed.
+R8 contains >8C02 for VDP access - VDP address already set. (Copy data to VDP)
+5xxx is banked, so this must in one or the other page...
+
+584a    movb r6,*r5         set GROm address
+        swpb r6
+        movb r6,*r5
+        swpb r6
+5852    movb @>fbfe(r5),@>fffe(r8)  copy byte to VDP
+        inc r6
+        coc @>2cde,r6       contains >17FE - checking for end of GROM (last 2 bytes are checksum)
+        jne >586c
+        a @>2ce0,r6         contains >0802 - jump to next GROM
+5864    movb r6,*r5         reset GROM address
+        swpb r6
+        movb r6,*r5
+        swpb r6
+586c    dec r7
+        jne >5852
+        s @>2ce6,r2         contains >0100 (bytewise subtract 1)
+        mov @>2ce2,r7       reload byte counter? or address?
+        jeq >5882
+        clr @>2ce2          first loop done, clear flag?
+        inc r3              inc loop counter??
+        jmp >5886
+5882    mov r6,@>2ce2       store address
+5886    b @>57ae            presumably we're done
+
+---
+
+4190 (not banked) has the base now in R13 and address in R1. Does a 16-bit read as big or little endian into R2
+based on the word at >2AE8. Increments R1 by 2 either way.
+
+4190    movb r1,@>0402(r13)
+        nop
+        movb @>8383,@>0402(R13)     r1 LSB
+        mov @>2ae8,r2               endian flag, if false - little endian. If true, big endian
+        jne >41ac
+        movb *r13,@>8385            read grom into LSB of R2
+        inct r1
+        movb *r13,r2                read grom into MSB of R2
+        b *r11                      and done
+41ac    movb *r13,r2                read multiple - get byte into r2
+        inct r1
+        movb *r13,@>8385            into LSB of R2 - note the order is different than the single read case above
+        b *r11                      and done
+        
+---
+
+4158 (not banked) has the base in R13 and address in R8. Just sets the address
+
+4158    movb r8,@>0402(r13)
+        nop
+        movb @>8391,@>0402(r13)     LSB of R8
+        b *r11
+
+---
+
+8302 -- a loop copied into scratchpad RAM - called with branch, not BL. R13 has address. looks like interpreter code?
+Looks like a lot of these scratchpad functions all read an extra argument byte.
+
+8300    inc r8
+        movb *R13,R1                fetch byte
+        srl r1,7                    shift not quite a byte
+        mov @>2db2(r1),r2           fetch table? data -- looks like a function table in DSR space! Fctns in scratchpad?
+        mov *r2+,r0                 get return address
+        b *r0                       jump to it (function in scratchpad??)
+        
+830e    inc r8
+        clr r4
+        mov *r13,@>8389             r4 lsb
+        inc r8
+        clr r3
+        movb *r13,@>8387            r6 lsb
+        b *r2
+        
+8310    clr r4
+        movb *r13,@>8389            r4 lsb
+8316    inc r8
+        clr r3
+        movb *r13,@>8387            r3 lsb
+        b *r2
+        
+8320    inc r8
+        clr r5
+        movb *r13,@>838b            r5 lsb
+        inc r8
+        clr r4
+        movb *r13,@>8389            r4 lsb
+        clr r3
+        movb *r13,r3
+        jlt >833c
+        swpb r3
+        inc r8
+        b *r2
+        
+833c    andi r3,>7f00
+        movb *r13,@>8387            r6 lsb
+        inct r8
+        b *r2
+        
+---
+
+5364 (banked) - port in R13. This function can fetch from GROM or CPU depending on entry point, this is the GROM part.
+
+535e    clr r4
+        movb *r13,@>8389            r4 lsb
+        inc r0
+        mov r7,r8
+        jmp >5370
+536a        
+
+---
+
+5290 - some kind of compare functions, port in R13
+
+5290    cb *r2+,*r13 
+        jne >52c4
+        dec r3
+        jgt >5290
+        jmp >52c2
+        
+529a    cb *r13,*r0+
+        jne >52c4
+        dec r3
+        jgt >529a
+        jmp >52c2
+        
+...
+
+52c2    c r6,r4
+52c4    x *r1
+...        
+
+---
+
+5398 - this one seems strange... maybe it's a bug? it hits the read port but I don't think it's supposed to...
+It reads a bunch of addresses (every 26 bytes, decrementing across whole memory map?). I can't tell where it's getting
+this (interpreted code?) or what it's looking for...?? After several times through the entire memory map, it continues. I am very sure this is not intended to be a GROM read.
+
+5398    movb *r2+,@>838d
+
+---
+
+4F70  starts a few accesses with the port in R1. Address in R4 can be big endian or little endian. Then reads a MSB word into R4.
+
+4F70    movb r4,@>0402(R1)
+        nop
+        movb @>8389,@>0402(R1)      r4 lsb
+        jmp >4f8c
+        
+4f7e    movb @>8389,@>0402(R1)      r4 lsb
+        nop
+        movb r4,@>0402(R1)
+        nop
+        
+4f8c    movb *r1,R4
+        nop
+        movb *r1,@>8389             r4 lsb
+        mov @>2ad6,r1
+        jeq >4fa8
+        mov @>2cfa(R2),r1
+        mov @>2d20(r2),r0
+        clr @>2ad6
+        b *r11
+        ...
+        
+---
+
+4BBA copy loop? Port in R13
+
+4BBA    movb *r13,r0       
+        nop
+        mov *r13,@>8381             r0 lsb
+        mov r0,*r2+
+        dec r1
+        jgt >4bba
+        jmp >4bb4                   basically a return
+
+---
+
+53be - more R13 code - another copy loop
+
+53be    movb *r13,@>838b            r5 lsb
+        c r5,r3
+        jgt >53e6
+        movb @>838b,*r2+            r5 lsb
+53ca    movb *r13,*r2+
+        dec r5
+        jgt >53ca
+        b @>4142
+        
+---
+
+50b2 - couple more set address functions
+
+50b2    movb r4,@>0402(r1)
+        nop
+        movb @>8389,@>0402(r2)      r4 lsb
+        b *r6
+        
+50c0    movb @>8389,@>0402(r1)      r4 lsb
+        nop
+        movb r4,@>0402(r1)
+        b *R6
+        
+---
+
+5118 - port in R1 again. Another copy loop.
+
+5118    mov r0,r0
+        jeq >513a
+        movb *r1,r0
+        cb r0,@>8387
+        jh >5134
+        movb r0,*r2+
+        jeq >5130
+        srl r0,8
+512a    mov *r1,*r2+
+        dec r0
+        jgt >512a
+5130    b @>4142
+5134    bl @>484a
+        data >000d
+513a    movb *r1,r0
+        cb r0,@>8387
+        jh >5134
+        srl r0,9
+        inc r0
+5146    mov *r1+,*r2+       This can't be GROM anymore? Double check I read this correctly.
+        dec r0
+        jgt >5146
+        b @>4142
+        
+---
+
+That seems to be all of them. With all of those masked out, I can load the editor and compiler. Not 100% sure that's it, but it's a good start.

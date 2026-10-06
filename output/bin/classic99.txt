@@ -1,0 +1,9 @@
+Add to Classic99.ini (adjust the usercart number and the paths to match your system).
+Note: there are two copies of the first GROM file to work around the REVIEW MODULE LIBRARY bug - that makes it not appear.
+
+[usercart47]
+Name=pCode Cartridge
+rom0=8|0000|8000|D:\work\TI\pcode_cart\output\bin\cartB2.bin
+rom1=G0|6000|a000|D:\work\TI\pcode_cart\output\bin\grom_base0_base1.bin
+rom2=G1|6000|a000|D:\work\TI\pcode_cart\output\bin\grom_base0_base1.bin
+rom3=G2|6000|5800|D:\work\TI\pcode_cart\output\bin\grom_base2.bin
