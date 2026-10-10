@@ -91,3 +91,9 @@ this `STRTBUF` area (`0x3900‑0x3FFF`) is unused, and it was verified **untouch
 by the Editor and Filer runs — so it is safe in practice. It is still not *formally*
 reserved from the p‑System, so if a later subsystem grabs very high/low memory this
 block should be reserved via the p‑System memory config.
+
+## UberGROM hardware
+
+For an UberGROM cart (512K paged ROM + ATmega1284 GROM), use the files in
+`output/ubergrom/` (`PCODE_ROM_8.BIN`, `PCODE_AVR_FLASH.BIN`, `PCODE_AVR_EEPROM.BIN`); see
+`output/ubergrom/UBERGROM.md` for the layout.

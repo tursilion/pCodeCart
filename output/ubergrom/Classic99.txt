@@ -1,0 +1,5 @@
+[usercart48]
+name=pCode UberGROM
+rom0=*|0|0|D:\work\TI\pcode_cart\output\ubergrom\PCODE_ROM_8.BIN
+rom1=U|0000|1E000|D:\work\TI\pcode_cart\output\ubergrom\PCODE_AVR_FLASH.BIN
+rom2=T|0000|1000|D:\work\TI\pcode_cart\output\ubergrom\PCODE_AVR_EEPROM.BIN
