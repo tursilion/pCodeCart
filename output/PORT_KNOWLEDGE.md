@@ -63,7 +63,7 @@ didn't need changing — only the ~dozen routines that actually touch the GROM p
 
 ---
 
-## 3. Cartridge image layout (`cartB2.bin`, 32 KB, 4 banks of 8 KB)
+## 3. Cartridge image layout (`cartB2.bin`, 32 KB, 4 banks of 8 KB; shipped as the first 4 banks of `romcart.bin`, see §12)
 
 ```
 bank0 = patched DSR bank C   (shared 6000-6FFF + banked 7000-7FFF, code)
@@ -389,8 +389,8 @@ only run once real p-code executes).
 **Still to verify (deeper testing):** Assembler / Linker, editing and saving a real
 workfile, and larger compiles. May surface a few more of the same finite class of fixes.
 
-**Deliverables in `output/bin/`:** `cartB2.bin` (32 KB cart), `grom_base0_base1.bin`,
-`grom_base2.bin`.
+**Deliverables in `output/bin/`:** `romcart.bin` (512 KB cart incl. ROM disk, §12),
+`grom_base0_base1.bin`, `grom_base2.bin`, plus `DATA.DSK` (example data disk).
 
 ---
 
@@ -448,11 +448,48 @@ more fixes of the same finite class.
 - `build/patchgrom.py` — GROM PME-code relocation + CRU neutralization (console mode).
 - `build/ramhelp.s` — RAM helper routines (console GROM access), loaded to 0x3A00.
 - `build/make_cartB2.py`, `build/build_cartB2.sh` — assemble the cart.
+- `build/add_romdisk.py` — append `BigCombinedDsk.dsk` as the ROM disk (banks 4+) → `romcart.bin`.
+- `build/regress.sh` — regression smoke tests in the sim (single data disk).
 - `build/cov_boot.txt` — boot opcode-start coverage (feeds reasm code/data separation).
-- `output/bin/` — `cartB2.bin`, `grom_base0_base1.bin`, `grom_base2.bin`.
+- `output/bin/` — `romcart.bin`, `grom_base0_base1.bin`, `grom_base2.bin`, `DATA.DSK`.
+- `BigCombinedDsk.dsk` — ROM disk contents (volume PSYS:); `romdrive.txt` — original ROM disk driver source.
 - Original ROMs: `PCardC.ROM`, `PCardD.ROM`; GROM: `p1f00g_0000_f800.GRM`;
   console: `994AROM.BIN`, `994AGROM.BIN`; disk DSR: `DISK.BIN`; disk image: `EDT-FIL.DSK`.
 - `pCode Disassembly p-system.pdf` — the system expert's **commented disassembly** (154 pp).
   Strong (not 100 %) ground truth; the authority for identifying routines and for verifying
   that every DSR-space entry-point table is correctly relocated (§8 bug 6). Extract text
   with `pypdf` (no `pdftotext` in the build env).
+
+---
+
+## 12. ROM disk — system files on the cartridge (unit `#12`, 2026-10-10)
+
+The system programs are served from cart ROM, so only a data disk is needed.
+
+- **Image:** `BigCombinedDsk.dsk` (360 KB, 1440 × 256-byte sectors, volume `PSYS:` with
+  SYSTEM.EDITOR/FILER/COMPILER/ASSEMBLER/LINKER/LIBRARY etc.) is split into 8 KB banks
+  starting at **bank 4** (32 sectors/bank; bank n selected by writing `>6000+2n`).
+  `add_romdisk.py` appends it to `cartB2.bin` and pads to 64 banks (512 KB) with copies
+  of bank 3 → `romcart.bin`.
+- **Driver:** `ROMDISK2`/`RD2READ` at the end of `ramhelp.s`, fixed at **RAM `0x3E00`**
+  (`.org 0x400` from the `0x3A00` link). `ROMDISK2` is a 4-word driver table
+  (read, write, init, status; only read is implemented). `RD2READ` mirrors DSKREAD:
+  clears SERBUF+12, sets FAC+2, clears GRMADDR, calls DISKPAR (`>56F4`, relocated to
+  **`>76F4`** in cart bank 1) to get R1=buffer, R2=count, R3=sector, R4=control. It
+  then copies from bank `4 + sector/32`, offset `(sector%32)*256`, to CPU RAM, VDP
+  (control bit 14) or GRAM (bit 15), crossing banks as needed, and restores bank 1
+  (`clr @>6002`) before `RTWP`.
+- **Install:** `patchgrom.py` (console mode) sets **UNITPNT[#12]** (RAM `0x2C38`,
+  from GROM `0xEEB4`; this chunk copies with GROM = RAM + `0xC27C`) from 0 to `ROMDISK2`. FNDBIOS then
+  dispatches `B *(UNITPNT[u]+opcode)`, so `#12` uses this driver instead of BLOCKED.
+  DRVNUM/PCBPNT are untouched; no PCB or DSR is involved.
+- **Reserved RAM map:** `0x3A00-0x3DFF` helpers, `0x3E00-0x3E97` ROM disk driver,
+  `0x3E98-0x3FF3` free (348 bytes), `0x3FF4-0x3FF9` temps, `0x3FFA-0x3FFF` free.
+- **Verified in the sim** (`build/regress.sh`, only `DATA.DSK` mounted): boot; Filer
+  `V` lists `4 DATA`, `12 PSYS`, `14 OS`; Editor/Quit menu; delete+left-arrow; the
+  compiler builds `#4:HELLO` → `#4:HW` ("3 lines compiled") and `X #4:HW` prints HELLO WORLD;
+  the Assembler and Linker load.
+- **Known limitation:** `*SYSTEM.LIBRARY` is looked up on the **root volume** (DSK1 if
+  mounted, else `#14`), never `#12`. `X #4:BM` therefore reports "Unit SPRITE not found"
+  unless SYSTEM.LIBRARY is copied onto the data disk. The fix would be to make `#12`
+  the root volume or redirect the library lookup.

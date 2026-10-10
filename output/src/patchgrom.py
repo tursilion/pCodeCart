@@ -206,6 +206,16 @@ if os.environ.get('GROMCONSOLE')=='1':
     else:
         print("WARN: GROM F290 != BLWP @0000 (=%04X %04X), HALT fix not applied"%(w(0xF290),w(0xF292)))
 
+# Install the ROM disk driver as unit #12 (replaces physical DSK6).
+# UNITPNT[#12] = RAM 0x2C38, copied from GROM 0xEEB4 (UNITPNT chunk: GROM = RAM + 0xC27C).
+if os.environ.get('GROMCONSOLE')=='1':
+    if w(0xEEB4)==0x0000 and w(0xEEB2)==0x0000 and w(0xEEB6)==0x2C70:
+        rd=ramsym('ROMDISK2')
+        setw(0xEEB4, rd)
+        print("ROM disk: UNITPNT[#12] (RAM 2C38 / GROM EEB4) -> ROMDISK2 (0x%04X)"%rd)
+    else:
+        print("WARN: UNITPNT[#12] @GROM 0xEEB4 not as expected (=%04X), ROM disk not installed"%w(0xEEB4))
+
 outname = 'cartgrom_b.bin' if os.environ.get('GROMCONSOLE')=='1' else 'cartgrom.bin'
 open(outname,'wb').write(g)
 print("wrote %s (%d bytes)"%(outname,len(g)))

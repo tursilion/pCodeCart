@@ -31,15 +31,19 @@
 	.global L4090
 	.global L4092
 	.global L4094
+	.global L4095
 	.global L4096
+	.global L4097
 	.global L4098
 	.global L4099
 	.global L409a
+	.global L409b
 	.global L409c
 	.global L409d
 	.global L409e
 	.global L409f
 	.global L40a2
+	.global L40a4
 	.global L40a8
 	.global L40aa
 	.global L40ac
@@ -1183,15 +1187,21 @@ L4090:
 L4092:
 	bl *r11
 L4094:
-	szc *r10, r5
+	byte 0x41
+L4095:
+	byte 0x5a
 L4096:
-	ldcr *r9+, 0
+	byte 0x30
+L4097:
+	byte 0x39
 L4098:
 	byte 0x61
 L4099:
 	byte 0x7a
 L409a:
-	byte 0x5f, 0x24
+	byte 0x5f
+L409b:
+	byte 0x24
 L409c:
 	byte 0x20
 L409d:
@@ -1201,7 +1211,9 @@ L409e:
 L409f:
 	byte 0x10, 0x0c, 0x00
 L40a2:
-	byte 0x20, 0x20, 0x00, 0x0a, 0x08, 0x00
+	byte 0x20, 0x20
+L40a4:
+	byte 0x00, 0x0a, 0x08, 0x00
 L40a8:
 	byte 0x00, 0x00
 L40aa:

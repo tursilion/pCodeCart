@@ -7,7 +7,7 @@ card** (banked DSR ROM at `>4000‑5FFF` + 8 custom GROM chips on private ports
 
 ---
 
-## 0. TL;DR / current state  (updated 2026‑10‑01)
+## 0. TL;DR / current state  (updated 2026‑10‑10)
 
 * **Approach B (CHOSEN, WORKING):** the 8 p‑code GROMs live as **real GROM in the
   console GROM address space** (`>9800` ports); the DSR ROM is relocated to
@@ -19,6 +19,11 @@ card** (banked DSR ROM at `>4000‑5FFF` + 8 custom GROM chips on private ports
   User‑confirmed on the target. The old "editor loads then crashes into `>50xx`" is
   resolved. **H(alt)** reboots cleanly and the cart can be re‑entered (it clears the
   p‑System "don't boot" flag at `0x38FA` before the reset — see §7a).
+* **ROM disk (2026‑10‑10):** the system programs (Editor, Filer, Compiler,
+  Assembler, Linker, SYSTEM.LIBRARY) now ship on the cart as read‑only unit **`#12
+  PSYS:`** (cart banks 4‑48, driver at RAM `0x3E00`), so only a data disk is needed.
+  Deliverable is `romcart.bin` (512 KB). Only known gap: SYSTEM.LIBRARY is looked up
+  on the root volume, not `#12`. Details in `PORT_KNOWLEDGE.md` §12.
 * **Approach A (paged‑ROM in cart banks):** prototype only — Milestone‑A boots to the
   prompt but the full paged‑GROM version hit the interpreter‑core "WALL" (§4) and was
   superseded by B.
@@ -183,13 +188,15 @@ Two conversion patterns worth remembering:
 ## 6. Files in this folder
 
 * **`bin/`** — exactly the working cartridge to load (see `bin/LOAD.md` for the
-  load map): `cartB2.bin` (32 KB paged ROM at `>6000‑7FFF`), `grom_base0_base1.bin`
+  load map): `romcart.bin` (512 KB paged ROM at `>6000‑7FFF`, incl. ROM disk), `grom_base0_base1.bin`
   (40 KB GROM at `>6000` on base0+base1), `grom_base2.bin` (22.5 KB GROM at `>6000`
-  on base2). These three files boot to the `Command:` prompt. (The two GROM images
+  on base2). These three files boot to the `Command:` prompt. `DATA.DSK` is an
+  example data disk. (The two GROM images
   are the console‑space halves of the relocated GROM: chips 0‑4 and chips 5‑7.)
 * `src/` — `ramhelp.s` (RAM helpers), `patchdsr.py` (in‑place DSR patches),
   `patchgrom.py` (GROM reloc + reseed), `make_cartB2.py`/`build_cartB2.sh`
-  (Approach‑B build), `reasm.py` (byte‑identical symbolic reassembler),
+  (Approach‑B build), `add_romdisk.py` (ROM disk → `romcart.bin`), `regress.sh`
+  (sim regression tests), `reasm.py` (byte‑identical symbolic reassembler),
   `shared.s`/`c5.s`/`d5.s` (reassembled DSR sources), `ti99sim.cc`/`cpu.*`
   (simulator), plus the Milestone‑A build (`make_cart.py`/`build_cartA.sh`) and
   coverage inputs (`cov_boot.txt`, `gromcov_boot.txt`, `rom_targets.txt`).
@@ -206,7 +213,8 @@ g++ -w -O2 ti99sim.cc cpu.cc -o ti99sim
 
 # Approach B (build the cartA reference first; it produces cartgrom.bin):
 bash build_cartA.sh          # -> cartA.bin  + cartgrom.bin   (EF7A=5BFC)
-bash build_cartB2.sh         # -> cartB2.bin + cartgrom_b.bin (EF7A=9800)
+bash build_cartB2.sh         # -> cartB2.bin + cartgrom_b.bin (EF7A=9800) + romcart.bin
+./regress.sh                 # regression smoke tests (romcart.bin + DATA.DSK)
 
 # boot Approach B to the Command: prompt
 ./ti99sim --cart cartB2.bin --grom cartgrom_b.bin --nodsr --gromconsole \

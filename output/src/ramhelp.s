@@ -1,5 +1,5 @@
 ; ---------------------------------------------------------------------------
-; Approach B RAM helpers (loaded to 0x3F00 at boot; present in both bank contexts).
+; Approach B RAM helpers (loaded to 0x3A00 at boot; present in both bank contexts).
 ; They reproduce the two DSR GROM address-set routines (orig L4144 / L4178) but
 ; translate the p-code GROM address into console GROM space and select the GROM
 ; base register r13:
@@ -9,7 +9,14 @@
 ; Runs in the caller's WS (entered by a plain `b` trampoline from the DSR ROM, so
 ; r11 = the original caller's return). Saves r0/r11 to RAM temps; leaves r13 set
 ; (subsequent `movb *r13` data reads then hit the correct console GROM base).
-; RAM temps: 0x3FF6 = r0 save, 0x3FF8 = r11 save.
+; RAM temps: 0x3FF4 = r0 save (HELP4F70*), 0x3FF6 = r0 save, 0x3FF8 = r11 save.
+;
+; Reserved low-memory map (0x3A00-0x3FFF):
+;   0x3A00-0x3DFF  RAM helpers (this file, up to .org 0x400)
+;   0x3E00-0x3E97  ROM disk driver for unit #12 (ROMDISK2 table + RD2READ)
+;   0x3E98-0x3FF3  free (348 bytes)
+;   0x3FF4-0x3FF9  RAM temps (above)
+;   0x3FFA-0x3FFF  free (6 bytes)
 ; ---------------------------------------------------------------------------
         .text
         .global RAM_A, RAM_B, RAM_C, XLAT, RAM_59B4, RAM_584A, HELP584A, HELP584B, HELP4F70A, HELP4F70B, RAM_50B2, RAM_50C0, HALTRESET
@@ -304,3 +311,94 @@ R50C_w:
 HALTRESET:
         clr  @0x38fa             ; clear the 'NO' don't-boot flag (-> 0x0000)
         blwp @0x0000             ; original console reset
+
+; =============================================================================
+; ROM-based disk device, installed as unit #12 (replaces physical DSK6).
+; Translated from romdrive.txt. Placed at a FIXED address 0x3E00
+; (ramhelp is linked at 0x3A00, so .org 0x400 -> 0x3E00) for easy debugging.
+; patchgrom points UNITPNT[#12] (RAM 0x2C38, GROM 0xEEB4) at ROMDISK2.
+; Disk image lives in cart banks 4.. (32 x 256-byte sectors per 8K bank).
+; =============================================================================
+        .global ROMDISK2, RD2READ
+        .org 0x400
+ROMDISK2:
+        data RD2READ             ; read function
+        data 0                   ; no write
+        data 0                   ; no init
+        data 0                   ; no status
+
+; Actual read function. Called (B *R2 from FNDBIOS) with WP=INTWS, R10=IOCTRL, ROM page 2
+; (bank1) active. Running in RAM, so banks can be switched freely; restore before RTWP.
+; After DISKPAR: R1=buffer, R2=byte count, R3=block/sector, R4=control word,
+;                R8=drive number, R9=physical drive number
+RD2READ:
+        sb   @0x29c4, @0x29c4     ; zero SERBUF+12 (our unit's previous-error byte)
+        seto @0x834c              ; FAC+2 read flag
+        clr  @0x2ce2              ; GRMADDR
+        bl   @0x76f4              ; DISKPAR (orig >56F4, relocated +0x2000 in the cart)
+
+; source: 32 sectors per 8K page
+        mov  r3, r6               ; to calculate page and offset
+        andi r6, 0x1f             ; 0-31 sector index inside page
+        swpb r6                   ; *256 -> offset
+        ai   r6, 0x6000           ; R6 = source address
+        srl  r3, 5                ; /32 -> page index
+        sla  r3, 1                ; *2 for bank-select address
+        ai   r3, 0x6008           ; first data page = bank 4 (>6008)
+
+; pick copy loop
+        andi r4, 0xc000           ; control word bits 14,15
+        jeq  COPYRAM
+        jlt  COPYGRAM             ; bit 15 -> GRAM
+
+; ---- copy to VRAM: src R6, page R3, dest R1, count R2
+        ori  r1, 0x4000
+        swpb r1
+        movb r1, @0x8c02
+        swpb r1
+        movb r1, @0x8c02
+VDPOUT:
+        clr  *r3+                 ; select page, advance to next
+VDPIN:
+        movb *r6+, @0x8c00        ; write byte
+        dec  r2
+        jeq  cpdone
+        ci   r6, 0x8000
+        jne  VDPIN
+        li   r6, 0x6000
+        jmp  VDPOUT
+
+; ---- copy to CPU RAM
+COPYRAM:
+RAMOUT:
+        clr  *r3+
+RAMIN:
+        movb *r6+, *r1+
+        dec  r2
+        jeq  cpdone
+        ci   r6, 0x8000
+        jne  RAMIN
+        li   r6, 0x6000
+        jmp  RAMOUT
+
+; ---- copy to GRAM (base 0x9C26 set / 0x981D data, per original firmware)
+COPYGRAM:
+        dec  r1
+        movb r1, @0x9c26
+        swpb r1
+        movb r1, @0x9c26
+GRAMOUT:
+        clr  *r3+
+GRAMIN:
+        movb *r6+, @0x981d
+        dec  r2
+        jeq  cpdone
+        ci   r6, 0x8000
+        jne  GRAMIN               ; (romdrive.txt had VDPIN here - fixed)
+        li   r6, 0x6000
+        jmp  GRAMOUT              ; (romdrive.txt had VDPOUT here - fixed)
+
+cpdone:
+        clr  @0x6002              ; p-code expects page 2 (bank1) active
+        rtwp
+

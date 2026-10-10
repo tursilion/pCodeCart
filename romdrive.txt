@@ -8,7 +8,9 @@ ROMDISK2
 
 ; Patch 2C38 to point to "ROMDISK2", whatever address we put it at (chosing a fixed address may make it easier).
 ; This code comes right after it, and includes the RD2READ label from above.
-
+; I considered adding a flash drive too, but we are down to just 348 bytes free. I don't think a read/write 
+; grom/flash device will fit. That's okay. Scope creep and all.
+;
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;    
 ; Actual read function. When we are called, the ROM is switched to page 2.
 ; We are running in RAM, so we can switch pages freely, just switch back before returning
@@ -18,7 +20,7 @@ ROMDISK2
 ; After DISKPAR:
 ;   R1 = buffer address
 ;   R2 = byte count
-;   R3 = block number (or maybe sector number, need to step and check - block is 512 bytes, sector is 256 bytes)
+;   R3 = sector number (depending on device, may return block number instead, but here it's sector)
 ;   R4 = Control word (0x8000 - GRAM, 0x4000 - VDP, else CPU)
 ;   R8 = drive number
 ;   R9 = physical drive number
@@ -26,7 +28,7 @@ RD2READ
         SB @0x29C4,@0x29C4  ; zero byte at SERBUF+12 (12 is our unit - clears any previous error byte)
         SETO @0x834C        ; FAC+2 (was 3, but SETO is 16-bit) Read flag
         CLR @0x2CE2         ; GRMADDR
-        BL @0x56F4          ; DISKPAR - read the data into standard registers - TODO - step and see if it does the SLA R3 at the end or not!
+        BL @0x76F4          ; DISKPAR
 
 ; figure out where it is coming from, looks like we can use R0,R5,R6,R7. Assuming sectors for now.
 ; that means 32 sectors per page
@@ -99,15 +101,15 @@ COPYGRAM
         
 ; outer loop for changing pages, inner loop for bytes (since it's bytes anyway)
 GRAMOUT
-        clr *r3+            ; set the page and increment for the next page
+        clr *r3+             ; set the page and increment for the next page
 GRAMIN
         movb *r6+,@0x981D    ; write byte (base 9 for some reason)
         dec r2
-        jeq cpdone          ; finished copy
+        jeq cpdone           ; finished copy
         ci r6,0x8000
-        jne VDPIN           ; not finished page
+        jne GRAMIN           ; not finished page
         li r6,0x6000
-        jmp VDPOUT          ; page reset, activate next one
+        jmp GRAMOUT          ; page reset, activate next one
 
 ; whichever copy it was, it's done. restore the page and return
 cpdone

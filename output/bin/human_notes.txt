@@ -63,7 +63,7 @@ Enter filer (F)
 - control-C to back out (code 3)
 - press G again (hangs here instead of accepting input)
 
-There are other sequences of keys you can press that hang. It's not very good in that respect.
+There are other sequences of keys you can press that hang.
 
 One with Get and 'Throw away current workspace?' not waiting that I can not reproduce.
 Editor hang on certain insert sequences that I can not reproduce.
@@ -254,15 +254,15 @@ COPYGRAM
         
 ; outer loop for changing pages, inner loop for bytes (since it's bytes anyway)
 GRAMOUT
-        clr *r3+            ; set the page and increment for the next page
+        clr *r3+             ; set the page and increment for the next page
 GRAMIN
         movb *r6+,@0x981D    ; write byte (base 9 for some reason)
         dec r2
-        jeq cpdone          ; finished copy
+        jeq cpdone           ; finished copy
         ci r6,0x8000
-        jne VDPIN           ; not finished page
+        jne GRAMIN           ; not finished page
         li r6,0x6000
-        jmp VDPOUT          ; page reset, activate next one
+        jmp GRAMOUT          ; page reset, activate next one
 
 ; whichever copy it was, it's done. restore the page and return
 cpdone

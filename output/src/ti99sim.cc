@@ -33,6 +33,8 @@ static bool     diskOn=false;        // CRU >1100 bit0
 static bool     noDisk=false;        // --nodisk: no disk controller at all
 #include <vector>
 #include <string>
+static const int ROMDISK_BASE=3;         // EXPERIMENTAL: flat ROMdisk starts at this GROM base (="page 4")
+static std::vector<uint8_t> romdisk;     // --romdisk flat_romdisk.bin: flat 512B-sector image served at base>=ROMDISK_BASE
 static std::vector<uint8_t> diskImgs[4]; // --disk/--disk2/--disk3: raw 256-byte/sector images (TICC), indexed by drive 1-3
 static std::string diskFile[4];          // diskFile[1]=DSK1, [2]=DSK2, [3]=DSK3
 static std::string g_vdpliFile;
@@ -80,7 +82,9 @@ static int      cartBank=0;
 static bool trace_pcode_ports=false;   // trace >5BFC/5BFE/5FFE
 static bool trace_dsr=false;            // trace reads/writes of >4000-5FFF
 static bool trace_cru=false;
-static bool trace_scratch=false;        // record scratchpad write coverage
+static bool trace_scratch=false;
+static bool g_gromdrv=false;
+static bool g_cr15=false;
 static uint8_t scratchWritten[0x100];   // which pad bytes ever written
 static bool trace_ram=false;            // record expansion RAM coverage
 static uint8_t ramUsed[0x10000];        // which expansion RAM bytes ever touched (r/w)
@@ -108,6 +112,7 @@ static std::set<int> g_gromPCs[2];     // distinct access PCs per cart bank (nor
 static FILE*g_vdptrace=nullptr; // --vdptrace FILE: log every VRAM data write as addr=val pc
 static long g_vdpafterkscan=0;  // --vdpafterkscan N: only log VDP once g_kscanHits>=N
 static FILE*g_readlog=nullptr;  // --gromreadlog FILE: log each GROM data byte delivered post-entry (to diff baseline vs cart)
+static FILE*g_setlog=nullptr;   // --gromsetlog FILE: log each cart-GROM address-set post-entry
 static bool g_basewarn=false;   // --basewarn: warn on base2 console-GROM read of a base0 address (inconsistent base)
 static std::set<long> g_screenkscan;    // --screenkscan N,N,..: dump the screen when kscan first reaches each N
 static FILE*g_pcodelog=nullptr;         // --pcodelog FILE: log p-code PC (r8) + r0 at each interp dispatch (0x830C)
@@ -190,19 +195,31 @@ public:
             int p = (base==0||base==1) ? (a-0x6000) : (base==2) ? (a+0x4000) : -1;
             if (p>=0 && p<pgGromLen) return pgGrom[p];
         }
+        // EXPERIMENTAL flat ROMdisk at pages base>=ROMDISK_BASE: console 0x6000-0xFFFF of each
+        // base is 40K (0xA000) of flat sector data; page = base-ROMDISK_BASE.
+        if (!romdisk.empty() && base>=ROMDISK_BASE && a>=0x6000){
+            size_t fa = (size_t)(base-ROMDISK_BASE)*0xA000 + (a-0x6000);
+            static int rdcnt=0; if(reachedEntry && rdcnt<60){ rdcnt++; fprintf(stderr,"[RD base%d cons=%04X flat=%04X byte=%02X pc=%04X wp=%04X]\n",base,a,(unsigned)fa,fa<romdisk.size()?romdisk[fa]:0,getPC(),getWP()); }
+            if (fa < romdisk.size()) return romdisk[fa];
+        }
         return 0;
     }
     uint8_t cgromRead(uint16_t x){
         int base=(x&0x3C)>>2;
         if (x&0x0002){ cgAccess=2; uint8_t z=(cgAddr>>8)&0xff; cgAddr=((cgAddr&0xff)<<8)|(cgAddr&0xff); return z; }
         else { cgAccess=2; uint8_t z=cgPre; bool cart=(cgAddr>=0x6000);
+            if(reachedEntry && cgAddr>=0x6010 && cgAddr<0x6150){ uint16_t np=(g_pc>=0x6000&&g_pc<0x8000)?g_pc-0x2000:g_pc; fprintf(stderr,"[ROMDISK-META read cg=%04X pc=%04X]\n",cgAddr,np); }
             if(g_basewarn && reachedEntry && base==2 && cgAddr>=0xB800)
                 fprintf(stderr,"[BASEWARN base2 read of base0 addr cg=%04X (pcode0=%04X) pc=%04X]\n",cgAddr,(uint16_t)(cgAddr-0x6000),g_pc);
             cgPre=cgromByte(base,cgAddr); gromInc(cgAddr); if(g_readlog&&reachedEntry&&cart) fprintf(g_readlog,"%02X\n",z); return z; }
     }
     void cgromWrite(uint16_t x,uint8_t c){
         int base=(x&0x3C)>>2;
-        if (x&0x0002){ if(g_readlog&&reachedEntry) fprintf(g_readlog,"CW base=%d c=%02X cg=%04X pc=%04X\n",base,c,cgAddr,g_pc); cgAddr=(cgAddr<<8)|c; cgAccess--; if(cgAccess==0){cgAccess=2; cgPre=cgromByte(base,cgAddr); gromInc(cgAddr);} }
+        if (x&0x0002){ if(g_readlog&&reachedEntry) fprintf(g_readlog,"CW base=%d c=%02X cg=%04X pc=%04X\n",base,c,cgAddr,g_pc); cgAddr=(cgAddr<<8)|c; cgAccess--; if(cgAccess==0){cgAccess=2;
+            if(reachedEntry && base<=1 && cgAddr>=0x6010 && cgAddr<0x60E0){ uint16_t np=(g_pc>=0x6000&&g_pc<0x8000)?g_pc-0x2000:g_pc; fprintf(stderr,"[IDX base%d cg=%04X nativePC=%04X]\n",base,cgAddr,np); }
+            cgPre=cgromByte(base,cgAddr);
+            if(g_setlog && reachedEntry && cgAddr>=0x6000){ static int sc=0; if(sc<200){sc++; fprintf(g_setlog,"SET base=%d cg=%04X val=%02X\n",base,cgAddr,cgPre);} }
+            gromInc(cgAddr);} }
     }
     // ---- VDP ----
     uint8_t vdpRead(uint16_t x){
@@ -262,7 +279,8 @@ public:
     void wb(uint16_t a,uint8_t c){
         switch(a&0xE000){
         case 0x0000: return; // ROM
-        case 0x2000: if(trace_ram) ramUsed[a]|=1; if(trace_gromcov&&pendGromAddr>=0){uint16_t wp=getWP(); if(a<wp||a>=wp+32){gromSrc[a]=pendGromAddr; pendGromAddr=-1;}} if((a==0x200C||a==0x200D)&&expRam[a]!=c) fprintf(stderr,"W200C a=%04X=%02X pc=%04X pgAddr=%04X\n",a,c,g_pc,pgAddr); if(g_watch>=0&&a>=g_watch&&a<g_watch+8) fprintf(stderr,"WATCH wr %04X=%02X pc=%04X pgAddr=%04X insn=%ld\n",a,c,g_pc,pgAddr,insnCount); expRam[a]=c; return;
+        case 0x2000: if(g_cr15&&a==0x2D01&&g_pc==0x608A) c=0x0C; // redirect boot fill: CODREAD[#15] 9800->980C (base3)
+                     if(trace_ram) ramUsed[a]|=1; if(trace_gromcov&&pendGromAddr>=0){uint16_t wp=getWP(); if(a<wp||a>=wp+32){gromSrc[a]=pendGromAddr; pendGromAddr=-1;}} if((a==0x200C||a==0x200D)&&expRam[a]!=c) fprintf(stderr,"W200C a=%04X=%02X pc=%04X pgAddr=%04X\n",a,c,g_pc,pgAddr); if(g_watch>=0&&a>=g_watch&&a<g_watch+8) fprintf(stderr,"WATCH wr %04X=%02X pc=%04X pgAddr=%04X insn=%ld\n",a,c,g_pc,pgAddr,insnCount); expRam[a]=c; return;
         case 0x4000:
             if(trace_dsr) tlog("[%06ld pc%04X] wr DSR %04X=%02X\n",insnCount,g_pc,a,c);
             if((servePorts||pcodeOn) && (a&1)==0 && (a==0x5ffc||a==0x5ffe)){
@@ -396,9 +414,13 @@ int main(int argc,char**argv){
         else if(a=="--gromfromcart") gromFromCart=true;
         else if(a=="--gromconsole") gromConsole=true;
         else if(a=="--gromreadlog"&&i+1<argc) g_readlog=fopen(argv[++i],"w");
+        else if(a=="--gromsetlog"&&i+1<argc) g_setlog=fopen(argv[++i],"w");
+        else if(a=="--gromdrv") g_gromdrv=true;
+        else if(a=="--cr15") g_cr15=true;
         else if(a=="--basewarn") g_basewarn=true;
         else if(a=="--nodisk") noDisk=true;
         else if(a=="--disk"&&i+1<argc) diskFile[1]=argv[++i];
+        else if(a=="--romdisk"&&i+1<argc){ FILE*rf=fopen(argv[++i],"rb"); if(rf){ fseek(rf,0,SEEK_END); long n=ftell(rf); fseek(rf,0,SEEK_SET); romdisk.resize(n); fread(romdisk.data(),1,n,rf); fclose(rf); fprintf(stderr,"romdisk: %ld bytes (%ld sectors) at base>=%d\n",n,n/512,ROMDISK_BASE); } }
         else if(a=="--disk2"&&i+1<argc) diskFile[2]=argv[++i];
         else if(a=="--disk3"&&i+1<argc) diskFile[3]=argv[++i];
         else if(a=="--taintvdp"&&i+1<argc) g_vdpliFile=argv[++i];
@@ -487,7 +509,9 @@ int main(int argc,char**argv){
             else  { cpu.branch(0x42a0); g_pc=0x42a0; }     // error 31 (not found)
         }
         if(g_pc==0x40D6){ uint16_t wp=cpu.getWP(); fprintf(stderr,"@40D6 WP=%04X R11=%04X\n",wp,cpu.peekW(wp+22)); }
+        if(g_cr15&&reachedEntry&&g_kscanHits>=800){ static uint16_t ul=0; uint16_t nn=(g_pc>=0x6000&&g_pc<0x8000)?g_pc-0x2000:g_pc; if((nn==0x34AC||nn==0x34EE||nn==0x34DC||nn==0x5652||nn==0x58FC||nn==0x5796)&&nn!=ul){ul=nn; fprintf(stderr,"[UNITCALL %04X kscan=%ld]\n",nn,g_kscanHits);} }
         pcring[pcringi++&63]=g_pc;
+        if(g_gromdrv&&reachedEntry){ uint16_t np=(g_pc>=0x6000&&g_pc<0x8000)?g_pc-0x2000:g_pc; if(np==0x58FC){ uint16_t wp=cpu.getWP(); fprintf(stderr,"[GROMUST R9(drive)=%d kscan=%ld]\n",cpu.peekW(wp+18),g_kscanHits); } else if(np==0x56F4||np==0x5796||np==0x5652||np==0x5736||np==0x5268||np==0x5818||np==0x5924){ static uint16_t last=0; if(np!=last){last=np; fprintf(stderr,"[GROMDRV %04X kscan=%ld]\n",np,g_kscanHits);} } }
         if(trace_gromcov){ int idx=(g_pc>=0x8300&&g_pc<0x8400)?(0x8000|(g_pc&0xff)):g_pc; if((g_pc>=0x2000&&g_pc<0x4000)||(g_pc>=0x8300&&g_pc<0x8400)||(g_pc>=0xa000)){ if(gromSrc[idx]>=0) gromCode[gromSrc[idx]]=1; } }
         if(trace_cov){
             if(g_pc>=0x4000&&g_pc<0x5000) covShared[g_pc-0x4000]=1;
@@ -567,6 +591,15 @@ int main(int argc,char**argv){
     }
     if(trace_gromcov&&gromcovOut){ FILE*f=fopen(gromcovOut,"w"); int n=0; for(int i=0;i<pgGromLen;i++){ if(gromCode[i]){fprintf(f,"%04X\n",i); n++;} } fclose(f); fprintf(stderr,"gromcov: %d GROM code bytes -> %s\n",n,gromcovOut); }
     { fprintf(stderr,"RAM 2050-2090:"); for(int a=0x2050;a<0x2090;a+=2) fprintf(stderr," %02x%02x",expRam[a],expRam[a+1]); fprintf(stderr,"\n"); }
+    { fprintf(stderr,"CODREAD 2CFA (port per (drive-15)*2):"); for(int a=0x2CFA;a<0x2D1C;a+=2) fprintf(stderr," %02x%02x",expRam[a],expRam[a+1]); fprintf(stderr,"\n");
+      fprintf(stderr,"ADDROFS 2D6C (addr per unit):"); for(int a=0x2D6C;a<0x2D8E;a+=2) fprintf(stderr," %02x%02x",expRam[a],expRam[a+1]); fprintf(stderr,"\n");
+      fprintf(stderr,"per-unit tables  unit: SERBUF PCBPNT  UNITPNT DRVNUM CODREAD ADDROFS\n");
+      for(int u=13;u<=20;u++){ int drv=expRam[0x2BFC+u]; int off=(drv-15)*2;
+        fprintf(stderr,"  #%2d: %02x    %02x%02x    %02x%02x    %02x     %02x%02x    %02x%02x\n",u,
+          expRam[0x29B8+u], expRam[0x29DC+u*2],expRam[0x29DD+u*2],
+          expRam[0x2C20+u*2],expRam[0x2C21+u*2], drv,
+          (off>=0&&off<0x22)?expRam[0x2CFA+off]:0,(off>=0&&off<0x22)?expRam[0x2CFB+off]:0,
+          (off>=0&&off<0x22)?expRam[0x2D6C+off]:0,(off>=0&&off<0x22)?expRam[0x2D6D+off]:0); } }
     if(dumpsrcOut){ FILE*f=fopen(dumpsrcOut,"w"); for(int i=0;i<0x10000;i++) if(gromSrc[i]>=0) fprintf(f,"%04X %04X\n",i,gromSrc[i]); fclose(f); fprintf(stderr,"dumped RAM->GROM provenance to %s\n",dumpsrcOut);}
     dumpNameTable(cpu);
     if(trace_scratch){

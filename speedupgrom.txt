@@ -1,0 +1,65 @@
+;; first draft. The AI made some changes to make it fit the split GROM concept.
+;; patch at romcart 0x3852: DA25 FBFE -> 0460 3E98
+
+; load into our spare ram. Patch 0x5852 in the second bank to B @ here (no link, we'll jump back directly).
+; a faster GROM copy loop - make sure to skip over the 0x800 gaps every 0x1800 bytes
+; that layout is hard coded here, it's NOT using @LASTGRM 
+; r0 - scratch?
+; r2 - total copy size (not important here - sectors have to be read)
+; r3 - block number (not important here)
+; r5 - GRMWA (msb first)
+; r6 - GROM address (expected updated on exit)
+; r7 - bytes to copy (expected zero on exit)
+; r8 - VDPWA
+; on entry GROM Address is pointed at the first byte, which is assumed valid
+GRMCP
+    ai r5,->0402        ; GRMRD is much more useful than WA
+    dect r8             ; VDPWD is more useful than WA
+    
+; figure out how many bytes we can copy before the hole
+gcpmain
+    mov r6,r0           ; make a copy
+    andi r0,>17ff       ; mask off just the interesting bits
+    neg r0
+    ai r0,>1800         ; >1800 - address(masked) is bytes to copy
+    c r0,r7             ; which is bigger?
+    jle gfit            ; it fits
+    mov r7,r0           ; last loop
+gfit
+    s r0,r7             ; little extra work on the last loop, but it's fast
+    a r0,r6             ; this is where we're going to land
+glp
+    movb *r5,*r8        ; copy from GROM to VDP
+    dec r0              ; don't unroll, both chips claim to need a breather
+    jne glp             ; though really, this should be enough...
+    mov r7,r7           ; anything left?
+    jeq gcpdone         ; nope! get out of here
+    a @GROMGAP,r6       ; skip the gap
+    movb r6,>0402(r5)   ; updating GROM address
+    swpb r6
+    movb r6,>0402(r5)
+    jmp gcpmain         ; loop around for the next bit
+gcpdone
+    inct r8             ; restore r8 just in case
+    ai r5,>0402         ; restore r5 just in case
+    b @>7870            ; jump back into the pCode after the loop.
+    
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+; original code
+;LOOP90 
+;    5852 DA25 %     MOVB @-WAOFFS(R5),@-2(R8) ; GROM data -> VDP data
+;    5854 FBFE
+;    5856 FFFE
+;    5858 0586       INC R6
+;    585A 21A0 !     COC @LASTGRM,R6 ; Check if in GROM address gap
+;    585C 2CDE ,
+;    585E 1606       JNE NOGEND2
+;    5860 A1A0       A @GROMGAP,R6   5862 2CE0 ,
+;    5864 D546 F     MOVB R6,*R5     ; Update GROM address to pass GROM address gap
+;    5866 06C6       SWPB R6
+;    5868 D546 F     MOVB R6,*R5
+;    586A 06C6       SWPB R6
+;NOGEND2 
+;    586C 0607       DEC R7 ; Sector size counter
+;    586E 16F1       JNE LOOP90
+;    5870 60A0 `     S @SECSIZE,R2

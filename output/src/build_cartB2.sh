@@ -34,7 +34,7 @@ $OC -O binary bank0.elf bank0.full; $OC -O binary bank1.elf bank1.full
 python3 -c "open('bank0.bin','wb').write(open('bank0.full','rb').read()[:0x2000])"
 python3 -c "open('bank1.bin','wb').write(open('bank1.full','rb').read()[:0x2000])"
 
-# 2. RAM helper (loaded to 0x3F00 at boot)
+# 2. RAM helper (loaded to 0x3A00 at boot)
 $AS ramhelp.s -o ramhelp.o
 $LD -Ttext=0x3A00 ramhelp.o -o ramhelp.elf 2>/dev/null
 $OC -O binary ramhelp.elf ramhelp.bin
@@ -47,4 +47,5 @@ GROMCONSOLE=1 python3 patchgrom.py >/dev/null
 
 # 5. assemble the cart image + loader
 python3 make_cartB2.py
+python3 add_romdisk.py
 echo "Approach B cart built: cartB2.bin + cartgrom.bin"

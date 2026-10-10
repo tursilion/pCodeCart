@@ -10,14 +10,14 @@ both banks) and are size-neutral (no layout shift, GROM @6xxx refs still resolve
         li r2,>E804 -> li r2,>A804   (pcode E804 -> console A804, bank1)
   * address-set routines (L4144/L4178): trampoline the entry to the RAM helpers,
     which reproduce the routine + translate the address + select the GROM base:
-        L4144: mov r15,r15 ; ...  -> b @RAM_A   (0x3F1E)
-        L4178: mov r15,r15 ; ...  -> b @RAM_B   (0x3F58)
+        L4144: mov r15,r15 ; ...  -> b @RAM_A   (0x3A1E)
+        L4178: mov r15,r15 ; ...  -> b @RAM_B   (0x3A7C)
 
-RAM_A/RAM_B addresses come from ramhelp.elf (loaded to 0x3F00 at boot).
+RAM_A/RAM_B addresses come from ramhelp.elf (loaded to 0x3A00 at boot).
 """
 import sys, subprocess
 
-# RAM helper entry addresses (must match ramhelp link @0x3F00)
+# RAM helper entry addresses (must match ramhelp link @0x3A00)
 def sym(name):
     out=subprocess.check_output(['bash','-c',
         "~/newtms9900-gcc/newgcc9900/bin/tms9900-objdump -t ramhelp.elf 2>/dev/null | grep -iw %s"%name]).decode()

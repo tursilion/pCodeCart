@@ -5,14 +5,14 @@ Approach B cart image (32KB, 4 banks). GROM is REAL hardware in console space
 plus a small loader bank that stages the RAM helper at boot.
 
   bank0 = patched DSR bank C   bank1 = patched DSR bank D
-  bank2 = boot loader @6100 + ramhelp bytes @6118 (copied to 0x3F00)
+  bank2 = boot loader @6100 + ramhelp bytes @6118 (copied to 0x3A00)
   bank3 = pad
 
 Every bank carries: header (AA + program-list ptr @6006 -> record @6008),
 record @6008 (free DSR header zeros), and the tail stubs:
   ENTRY    @7FF0 : clr @6004 (select bank2) ; b @6100 (loader)
   STARTSTUB@7FF8 : clr @6000 (select bank0) ; b @6038 (real startup)
-Boot flow: console -> record -> ENTRY -> (bank2) loader copies ramhelp->3F00 ->
+Boot flow: console -> record -> ENTRY -> (bank2) loader copies ramhelp->3A00 ->
            b @7FF8 (STARTSTUB, replicated) -> clr @6000 ; b @6038.
 """
 BANKSZ=0x2000; NB=4
@@ -44,7 +44,7 @@ banks[0][:]=b0; banks[1][:]=b1
 # bank2: loader @0x100 then ramhelp @0x118
 L=banks[2]
 setw(L,0x100,0x0201); setw(L,0x102,0x6118)   # li r1,0x6118  (ramhelp source)
-setw(L,0x104,0x0202); setw(L,0x106,0x3A00)   # li r2,0x3F00  (dest)
+setw(L,0x104,0x0202); setw(L,0x106,0x3A00)   # li r2,0x3A00  (dest)
 setw(L,0x108,0x0200); setw(L,0x10A,len(rh)//2)  # li r0,wordcount
 setw(L,0x10C,0xCCB1)                          # loop: mov *r1+,*r2+
 setw(L,0x10E,0x0600)                          # dec r0
@@ -55,4 +55,4 @@ L[0x118:0x118+len(rh)]=rh                     # ramhelp source bytes
 for bk in banks: add_common(bk)
 
 open('cartB2.bin','wb').write(b''.join(bytes(x) for x in banks))
-print("wrote cartB2.bin (%d bytes, %d banks); ramhelp=%d bytes @bank2:6118 -> 3F00"%(BANKSZ*NB,NB,len(rh)))
+print("wrote cartB2.bin (%d bytes, %d banks); ramhelp=%d bytes @bank2:6118 -> 3A00"%(BANKSZ*NB,NB,len(rh)))
