@@ -1,0 +1,43 @@
+There was a request about how to add a RAM-disk to the p-system, so here is some background to what you need to do. The benefit is obvious for any use case, but especially for the compiler. Due to segmentation it accesses the disk drive all the time, and they must also swap to the source code and, when the backend is running, to the code file. Putting all that stuff on a RAM disk reduces compile time to half the normal.
+
+ 
+
+First some background to why this isn't trivial. To make some things easier to follow, I've enclosed the latest ediion of my disassembly of the p-system. Label names given below can be found in that file (they are mine - there's no real source available).
+
+ 
+
+The p-system accesses various hardware through volumes. There are serial volumes and blocked volumes. Serial volumes produce or consume one character at a time, like the keyboard or an RS-232 communication link. Blocked volumes must read/write a certain number of characters at the same time. Like disk drives and simulated drives, like the OS: volume that's in GROM on the p-code card.
+
+The volumes may have a name, but they all have numbers. The disk drive volumes are number 4, 5, 9, 10, 11 and 12. This is the same in all p-systems, regardless of what they are called in the machine it's running on. Since the TI 99/4A had a disk controller from TI that could handle only three drives, volumes #4:, #5: and #9: are the only ones that are enabled. If you install a CorComp controller you can still use only three drives, regardless of that the controller can handle four.
+
+ 
+
+To map the volume numbers to real drives the p-system uses some tables.
+
+DRVNUM contans a conversion from volume number to physical disk number. It's already filled in for six drives. Or I think so. It's on my system, but maybe I do that in my startup program. Will have to check.
+
+UNITPNT contains pointers to the code that handles each type of drive. All physical drives must have the same address (BLOCKED) in their entries. To get a fourth drive to work with a CorComp controller you must change the entry for volume #10: (at 2C34H) from 0 to 2C70 (BLOCKED). That's all that takes.
+
+To add a RAM disk as volume #11: you must plug in BLOCKED here too, to make it a blocked device in use.
+
+ 
+
+But for a RAM disk that's not enough. This is because the p-system accesses volumes via a PCB (Peripheral Control Block). This is an extension to the standard PAB the normal operating system uses. The PCB is extended with the CRU and entry address to the DSR in use. This means that all disk drives up to and including volume #12: must use the same controller. Then there are tests in the BIOS that will check if the volume number is higher and if so, jump to different handling of the volume. Blocked volumes in the range #13:to #30: are assumed to be implemented in GROM or VDP RAM, so they are different.
+
+ 
+
+But the RAM disk has to fit in as being a physical disk. The p-system will scan for controllers when you boot, and once again on use if a certain device wasn't found during boot time (they provided for hot-plugging here). Then it never scans again, so if it has found a disk controller for a physical DSK1, it will assume the same is used all the way to DSK6. If a RAM disk has a different DSR, enabled by a different CRU base address, it must have it's own PCB. Changing the pointer is easy enough. The table PCBPNT holds pointers to the address in VDP RAM where each PCB is stored. But we have to host the PCB somewhere in VDP RAM. There are pointers to the first and last address available in VDP RAM (INTMEM and TOPMEM), but if you steal some VDP RAM by changing a pointer, then you can't use software like the system's Editor any longer. It's so tight a fit that it needs every byte available to work.
+
+ 
+
+Instead you have to hide the PCB in some area you don't use. I typically place it in the top character definitions (at chr(255) etc.) or in the sprite attribute table, if I know I'm not going to use all available sprites. You can copy the PCB for the standard disk controller. Just populate it with the proper CRU base address and start address of your DSR program.
+
+Now for the DSR to work it must implement the subprogram used for sector read/write access (10H). That's the only one used by the p-system. It must also respond to drive 5 for volume #11: and to drive 6 for volume #12:. They would be DSK5 or DSK6 in the standard system. It's also important that the DSR has a clean and unique entry for disk sector access. I found some versions of the ROS for the Horizon RAM disk incompatible. To save DSR memory space, that DSR had a common entry for all subprograms. The DSR then looked into the memory used by the standard system's DSRLNK program to figure out which suprogram was actually called. But since the p-system accesses disk drives in the way TI outlined in their Technical Reference, by traversing a linked list of subprogram entries until it finds the sector access and then store the entry data locally, the next time it calls the sector access program there will not be any data revealing which subprogram it's looking for. It already knows the address so it just jumps there and expects the sector access to work (vector ar PERCALL). There isn't even any subprogram data available in the normal place on the first scan either (DSRSRCH), as the p-system does that in a different way than the DSRLNK does.
+
+ 
+
+Once all this is done you want to create a p-system volume on your RAM disk. You can use the Filer to do that. Zero the volume, then create a directory and give the volume a name, like RAMDISK:. When that's done you can copy the Compiler, Editor and Filer to the RAM disk to have quicker access to them. There is one more thing you need to do for that to work. The system keeps track of where the system files like the Compiler and Editor are. Hence it doesn't have to look for them when you call them. This data vill contain the location of these files at boot time, if they were online at that time. Typically on your system disk in volume #4: (DSK1). You making a copy of the compiler on the RAM disk will not change this. Either you have to patch the new location into memory yourself, or remove the system disk and invoke the Compiler. Unable to find it on the now lost system disk, it will initiate a global search for the Complier. When it finds it on the RAM disk it will update the table for you.
+
+ 
+
+This is all in principle. The devil is in the details, as always. I'll have to come back and make some source code available to show these details. It's easy enough nowadays for anyone to look into the memory using an emulator like Classic 99, of course.

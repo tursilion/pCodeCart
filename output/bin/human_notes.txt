@@ -67,3 +67,213 @@ There are other sequences of keys you can press that hang. It's not very good in
 
 One with Get and 'Throw away current workspace?' not waiting that I can not reproduce.
 Editor hang on certain insert sequences that I can not reproduce.
+
+-------------
+
+Floppy extraction — all three disks are raw-linear UCSD volumes (block N = offset N·512). Verified by content, not just the directory: HELLO.TEXT reads as PROGRAM HELLO; … WRITE('HELLO WORLD'), SYSTEM.EDITOR's codefile segment dictionary is valid, etc. The TI fragmentation (the "PASCAL" file's cluster chain, physical 34–359 then 3–33) is not honored by the p-System — it uses absolute sector access, exactly as you cautioned me to check. So I can pull every file cleanly.
+
+ROMdisk ("OS" volume) structure, fully decoded:
+- Header FA 01 | nblk | … | @0x08 = 0x00E2 (directory ptr) | @0x0A = 0x014A (data-start ptr)
+- Block > GROM map (the "index") at GROM 0x10: index[N] = GROM address of UCSD block N+6 (confirmed: index[0] = SYSTEM.PASCAL's segment dictionary = block 6). Entries are 16-bit and encode the 2K-pad skips.
+- Directory at 0xE2: UCSD vol "OS" + SYSTEM.PASCAL(6–101)/MISCINFO(101–102)/CHARAC(102–104).
+
+-------------
+
+Routine at 4F70 (look at disassembly) looks to be reading GROM by setting address and reading 2 bytes, very slowly and carefully. Since we are moving to ubergrom, we could remove all the delay nops and nearly double the access speed. Need to check that nothing jumps into the middle of it.
+
+Should also try to see if you can make it handle not just cru 1100 for disk one all the time so if you can't get the images in the cart, at least allow a tipi to load an image of something. 
+
+Next step would be nice to have true 80 col, instead of a windowing 40 col.
+
+--------------
+
+GROM Library investigation.
+
+GROM must start with "FA" to be valid.
+6000: FA
+6001: ?? - not tested at startup. OS disk uses 01
+6002-3: size of volume in blocks
+6004-5: - 0000 on example
+6006-7: - 0000 on example
+6008-9: read data address - this is >00E2 in the test but per the code MUST be >60E2 to work here. (Assuming >00E2 is correct as an offset). This is needed ONLY if we are building GROM libraries, not normal ROMdisks.
+
+I think the disk format is correct for this - at least, what it reads (with the address fix) seems reasonable. It goes through the motions of "adding" it, but it doesn't show up in volumes and I don't know if it should.
+
+This search loop is at >2224. It first reads units 15 and 16, 64 bytes each, to different buffers (2846 and 249e). Then it compares the buffers. If the buffers differ, then it skips the clear loop. I think this is just to filter out when there are NO bases.
+
+The GROM copy loop at 584a bank 2 checks again address >17FE, and adds >0802 if it's hit in order to skip over the gap during a data copy. These come from >2CDE and >2CE0. Could speed up copies a lot by removing this and using full 8k GROMs, but that's a completely separate investigation we are not revisiting.
+
+One question. With only 30k available on a single GROM Library now (5 6k groms), can the COMPILER program even fit in that space by itself? This might not be worth pursuing further.
+
+There's also the concept of "user" drives, from unit 128. It's not clear how to link one in, but if we could I could write the driver to serve data from ROM rather than GROM, faster and no need to worry about skips or the Pascal driver. It looks like there are three tables that need to be created, linked from 2BF6, beyond that I have no idea.
+
+Pointless in the end. We can only have 40k max without hacking in more paging. Compiler alone is 49k.
+
+---------------
+
+Overdrive autorepeat can be fixed with C2DA4=10  -- this is a shift table and the byte is normally 02, but nothing appears to use this entry except autorepeat. Good enough for basic work.
+
+Set code at >5578 appears it could use it - so breakpoint there if you change it so you know if you break something.
+
+---------------
+
+User Device investigation.
+
+User devices start with device #129
+There are three pointers, and one counter:
+
+USERDEF 2BF4 007F .WORD ; Highest user index
+UNPNT   2BF6 0000 .WORD ; Pointer to unit pointer table
+PCBPNT  2BF8 0000 .WORD ; Pointer to PCB pointer table
+BUFAPNT 2BFA 0000 .WORD ; Pointer to buffer address table
+
+>5236 page 2 is the entry point.
+
+USERDEF
+- contains the highest valid user drive index - change this to 129 to add one (128 exactly is internally mapped down to #31).
+- 128 is subtracted so the first user index internally becomes 1, not 0.
+
+UNPNT:
+- NOT optional - zero will result in a bad device error.
+- R1 offset is added, so 129 will need a 0000, <real entry> sequence
+- <real entry> points to a bios code address. This is the base of the 4 entry function table. (read, write, init, status). All appear to be optional, so we only need read.
+- page 2 is active for all this, and the function is directly called with B *R2
+
+PCBPNT:
+- may be optional if a real device is not in use? 0 does not seem to hurt the code.
+
+BUFAPNT:
+- if not zero, used to look up a physical drive number and store it in the access block
+
+We just need to implement a device with a custom READ function that it treats like a disk...
+Steal #12 - Drive 6. Least likely to ever be used, and if it is, hopefully we make up for it.
+- this uses a PCB at 3ECD. That's fine as long as it doesn't jump to the TI disk controller.
+- 2C08 defines it as physical drive #6 - table DRVNUM.
+- 2C38 is the UNITPNT which is 0, we need to point it at the function table
+- We have some extra space at the top of low RAM we are using, we can put it there, and the driver for that matter, since it will be small. That solves some paging issues.
+
+Assemble this code to fit in the free area we've put the other stubs in, between 0x3A00 and 0x3FFF:
+
+ROMDISK2
+    DATA RD2READ    ; read function
+    DATA 0          ; no write
+    DATA 0          ; no init
+    DATA 0          ; no status
+
+Patch 2C38 to point to "ROMDISK2", whatever address we put it at (chosing a fixed address may make it easier).
+
+This code comes right after it, and includes the RD2READ label from above.
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;    
+; Actual read function. When we are called, the ROM is switched to page 2.
+; We are running in RAM, so we can switch pages freely, just switch back before returning
+; return with RTWP. Byte count can be more than one sector, or less than one.
+; look at 57C2 - suggests that control bits mean move buffer to VDP or GRAM, else to RAM
+; Could probably use their subroutines if I set up registers correctly.
+; After DISKPAR:
+;   R1 = buffer address
+;   R2 = byte count
+;   R3 = block number (or maybe sector number, need to step and check - block is 512 bytes, sector is 256 bytes)
+;   R4 = Control word (0x8000 - GRAM, 0x4000 - VDP, else CPU)
+;   R8 = drive number
+;   R9 = physical drive number
+RD2READ
+        SB @0x29C4,@0x29C4  ; zero byte at SERBUF+12 (12 is our unit - clears any previous error byte)
+        SETO @0x834C        ; FAC+2 (was 3, but SETO is 16-bit) Read flag
+        CLR @0x2CE2         ; GRMADDR
+        BL @0x76F4          ; DISKPAR - read the data into standard registers - TODO - step and see if it does the SLA R3 at the end or not!
+
+; figure out where it is coming from, looks like we can use R0,R5,R6,R7. Assuming sectors for now.
+; that means 32 sectors per page
+        mov r3,r6           ; to calculate page and offset
+        andi r6,0x1f        ; 0-31 - sector index inside of page
+        swpb r6             ; times 256 (we know the bits are zeroed cause of the andi) - R6 is offset
+        ai r6,0x6000         ; now R6 is address
+        srl r3,5            ; divided by 32 - page index
+        sla r3,1            ; times 2 for hardware
+        ai r3,0x6008         ; first page for ROMdisk2 - coming up in the middle is bad, BUT we have 
+
+; figure out which copy loop to use (note: not going to call the DSR versions, since my data isn't in VDP to start)
+        ANDI R4,C000        ; Control word bit 14 and 15
+        JEQ COPYRAM
+        JLT COPYGRAM        ; Control bit 15
+
+; copy to VRAM
+; Source address: R6
+; Source page:    R3
+; Destination:    R1
+; Bytes left:     R2
+
+; set VDP address
+        ORI R1,0x4000
+        SWPB R1
+        MOVB R1,@0x8C02
+        SWPB R1
+        MOVB R1,@0x8C02
+        
+; outer loop for changing pages, inner loop for bytes (since it's bytes anyway)
+VDPOUT
+        clr *r3+            ; set the page and increment for the next page
+VDPIN
+        movb *r6+,@0x8C00    ; write byte
+        dec r2
+        jeq cpdone          ; finished copy
+        ci r6,0x8000
+        jne VDPIN           ; not finished page
+        li r6,0x6000
+        jmp VDPOUT          ; page reset, activate next one
+
+; copy to RAM
+; Source address: R6
+; Source page:    R3
+; Destination:    R1
+; Bytes left:     R2
+COPYRAM
+RAMOUT
+        clr *r3+            ; set the page and increment for the next page
+RAMIN
+        movb *r6+,*r1+      ; write byte - we'll just do bytes for simplicity - don't know count or dest alignment
+        dec r2
+        jeq cpdone          ; finished copy
+        ci r6,0x8000
+        jne RAMIN           ; not finished page
+        li r6,0x6000
+        jmp RAMOUT          ; page reset, activate next one
+
+; copy to GRAM - this weirdly uses a base of 0x9C26 (as the GRAM set address) - remember to decrement it before setting
+; this probably won't work with my cart installed, it must have been meant for some library cart...
+; Source address: R6
+; Source page:    R3
+; Destination:    R1
+; Bytes left:     R2
+COPYGRAM
+        dec r1
+        MOVB R1,@0x9C26
+        SWPB R1
+        MOVB R1,@0x9C26
+        
+; outer loop for changing pages, inner loop for bytes (since it's bytes anyway)
+GRAMOUT
+        clr *r3+            ; set the page and increment for the next page
+GRAMIN
+        movb *r6+,@0x981D    ; write byte (base 9 for some reason)
+        dec r2
+        jeq cpdone          ; finished copy
+        ci r6,0x8000
+        jne VDPIN           ; not finished page
+        li r6,0x6000
+        jmp VDPOUT          ; page reset, activate next one
+
+; whichever copy it was, it's done. restore the page and return
+cpdone
+        clr @0x6002          ; pCode expects page 2 to be active
+        rtwp
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+Even though this will introduce ROM pages without headers, they are only mapped in briefly. As long as the first and last cart pages have headers, and nobody resets during a copy, it'll be fine. QUIT doesn't work anyway, you have to Halt, and that requires a valid page be active.
+
+Then we just mount the disk image starting at bank 4 (with the existing cart in 0-3), and see if it comes up.
+
+We now have a big disk image with everything needed. The SYSTEM.PASCAL from OS doesn't work if it's there, but everything else seems okay. "BigCombinedDisk.dsk" which also has a fair bit of space left over. It seems the lowercase font (and probably other OS overrides) don't work if they aren't DSK1, so that's okay.
+

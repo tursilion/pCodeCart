@@ -1,0 +1,115 @@
+; Assemble this code to fit in the free area we've put the other stubs in, between 0x3A00 and 0x3FFF:
+
+ROMDISK2
+    DATA RD2READ    ; read function
+    DATA 0          ; no write
+    DATA 0          ; no init
+    DATA 0          ; no status
+
+; Patch 2C38 to point to "ROMDISK2", whatever address we put it at (chosing a fixed address may make it easier).
+; This code comes right after it, and includes the RD2READ label from above.
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;    
+; Actual read function. When we are called, the ROM is switched to page 2.
+; We are running in RAM, so we can switch pages freely, just switch back before returning
+; return with RTWP. Byte count can be more than one sector, or less than one.
+; look at 57C2 - suggests that control bits mean move buffer to VDP or GRAM, else to RAM
+; Could probably use their subroutines if I set up registers correctly.
+; After DISKPAR:
+;   R1 = buffer address
+;   R2 = byte count
+;   R3 = block number (or maybe sector number, need to step and check - block is 512 bytes, sector is 256 bytes)
+;   R4 = Control word (0x8000 - GRAM, 0x4000 - VDP, else CPU)
+;   R8 = drive number
+;   R9 = physical drive number
+RD2READ
+        SB @0x29C4,@0x29C4  ; zero byte at SERBUF+12 (12 is our unit - clears any previous error byte)
+        SETO @0x834C        ; FAC+2 (was 3, but SETO is 16-bit) Read flag
+        CLR @0x2CE2         ; GRMADDR
+        BL @0x56F4          ; DISKPAR - read the data into standard registers - TODO - step and see if it does the SLA R3 at the end or not!
+
+; figure out where it is coming from, looks like we can use R0,R5,R6,R7. Assuming sectors for now.
+; that means 32 sectors per page
+        mov r3,r6           ; to calculate page and offset
+        andi r6,0x1f        ; 0-31 - sector index inside of page
+        swpb r6             ; times 256 (we know the bits are zeroed cause of the andi) - R6 is offset
+        ai r6,0x6000         ; now R6 is address
+        srl r3,5            ; divided by 32 - page index
+        sla r3,1            ; times 2 for hardware
+        ai r3,0x6008         ; first page for ROMdisk2 - coming up in the middle is bad, BUT we have 
+
+; figure out which copy loop to use (note: not going to call the DSR versions, since my data isn't in VDP to start)
+        ANDI R4,C000        ; Control word bit 14 and 15
+        JEQ COPYRAM
+        JLT COPYGRAM        ; Control bit 15
+
+; copy to VRAM
+; Source address: R6
+; Source page:    R3
+; Destination:    R1
+; Bytes left:     R2
+
+; set VDP address
+        ORI R1,0x4000
+        SWPB R1
+        MOVB R1,@0x8C02
+        SWPB R1
+        MOVB R1,@0x8C02
+        
+; outer loop for changing pages, inner loop for bytes (since it's bytes anyway)
+VDPOUT
+        clr *r3+            ; set the page and increment for the next page
+VDPIN
+        movb *r6+,@0x8C00    ; write byte
+        dec r2
+        jeq cpdone          ; finished copy
+        ci r6,0x8000
+        jne VDPIN           ; not finished page
+        li r6,0x6000
+        jmp VDPOUT          ; page reset, activate next one
+
+; copy to RAM
+; Source address: R6
+; Source page:    R3
+; Destination:    R1
+; Bytes left:     R2
+COPYRAM
+RAMOUT
+        clr *r3+            ; set the page and increment for the next page
+RAMIN
+        movb *r6+,*r1+      ; write byte - we'll just do bytes for simplicity - don't know count or dest alignment
+        dec r2
+        jeq cpdone          ; finished copy
+        ci r6,0x8000
+        jne RAMIN           ; not finished page
+        li r6,0x6000
+        jmp RAMOUT          ; page reset, activate next one
+
+; copy to GRAM - this weirdly uses a base of 0x9C26 (as the GRAM set address) - remember to decrement it before setting
+; this probably won't work with my cart installed, it must have been meant for some library cart...
+; Source address: R6
+; Source page:    R3
+; Destination:    R1
+; Bytes left:     R2
+COPYGRAM
+        dec r1
+        MOVB R1,@0x9C26
+        SWPB R1
+        MOVB R1,@0x9C26
+        
+; outer loop for changing pages, inner loop for bytes (since it's bytes anyway)
+GRAMOUT
+        clr *r3+            ; set the page and increment for the next page
+GRAMIN
+        movb *r6+,@0x981D    ; write byte (base 9 for some reason)
+        dec r2
+        jeq cpdone          ; finished copy
+        ci r6,0x8000
+        jne VDPIN           ; not finished page
+        li r6,0x6000
+        jmp VDPOUT          ; page reset, activate next one
+
+; whichever copy it was, it's done. restore the page and return
+cpdone
+        clr @0x6002          ; pCode expects page 2 to be active
+        rtwp
