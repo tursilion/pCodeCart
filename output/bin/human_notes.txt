@@ -277,3 +277,19 @@ Then we just mount the disk image starting at bank 4 (with the existing cart in 
 
 We now have a big disk image with everything needed. The SYSTEM.PASCAL from OS doesn't work if it's there, but everything else seems okay. "BigCombinedDisk.dsk" which also has a fair bit of space left over. It seems the lowercase font (and probably other OS overrides) don't work if they aren't DSK1, so that's okay.
 
+;;;;;;;;;;;;;;;
+
+Without GROM speedup loop - 24 seconds to boot (Classic99).
+With: 30! This probably has more to do with the flash disk
+
+:::::::::::::::
+
+-- Next Steps to Improve --
+
+The concept of a 'flash drive' using the rest of the GROM space - I passed on this because of lack of free space for the driver, but if we added another page (or 2) of ROM dedicated to our expansions, then all we need to place in RAM are stubs to handle the paging. There's enough RAM left for that. Since the flash device doesn't need to page ROM, it's okay to have that code running there.
+
+80 columns would be possible if we freed up VRAM. One way to do this might be to move VRAM to a SAMS driver instead. Using AMS you could conceivably create much larger programs (depending on how expandable the memory management is). But even just moving the VDP RAM there would free up the memory that Editor currently requires, allowing the larger buffer.
+
+If you could also patch the output code to write directly to VDP instead of to CPU memory, you could do away with the VDP copy loop that runs periodically. However, this would only be faster if you could write strings, if you have to set the address every time I'd keep the VDP copy. However, note that going to 80 columns would double the amount of work this function needs to do. Perhaps using some of the newfound memory as a 'dirty' flag would help - you could simply tag each line as dirty or not, and an unchanged screen would only need to read 24 bytes of CPU memory, and a changed screen would only need to copy the changed lines - which are often not many. 
+
+We have many more disk devices these days. Even though the pCode scans all devices, it appears that disks only work on CRU >1100. Understanding this code and fixing it to work across CRUs with the many devices we have now would help the system. Because it functions at the low level sector read/write, this makes some devices tricky. But because it operates inside a large 'PASCAL' file on the TI file system, replacing that with the *file* sector read/write function suddenly opens it up to a lot of devices - even TIPI.
