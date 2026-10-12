@@ -288,6 +288,8 @@ With: 30! This probably has more to do with the flash disk
 
 The concept of a 'flash drive' using the rest of the GROM space - I passed on this because of lack of free space for the driver, but if we added another page (or 2) of ROM dedicated to our expansions, then all we need to place in RAM are stubs to handle the paging. There's enough RAM left for that. Since the flash device doesn't need to page ROM, it's okay to have that code running there.
 
+Didn't think of this before, since the UberGROM wasn't the original target, but the UberGROM exposes 12k of GRAM. If that's big enough to replace the VDP memory, then we could do that without AMS.
+
 80 columns would be possible if we freed up VRAM. One way to do this might be to move VRAM to a SAMS driver instead. Using AMS you could conceivably create much larger programs (depending on how expandable the memory management is). But even just moving the VDP RAM there would free up the memory that Editor currently requires, allowing the larger buffer.
 
 If you could also patch the output code to write directly to VDP instead of to CPU memory, you could do away with the VDP copy loop that runs periodically. However, this would only be faster if you could write strings, if you have to set the address every time I'd keep the VDP copy. However, note that going to 80 columns would double the amount of work this function needs to do. Perhaps using some of the newfound memory as a 'dirty' flag would help - you could simply tag each line as dirty or not, and an unchanged screen would only need to read 24 bytes of CPU memory, and a changed screen would only need to copy the changed lines - which are often not many. 
