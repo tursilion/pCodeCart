@@ -295,3 +295,59 @@ Didn't think of this before, since the UberGROM wasn't the original target, but 
 If you could also patch the output code to write directly to VDP instead of to CPU memory, you could do away with the VDP copy loop that runs periodically. However, this would only be faster if you could write strings, if you have to set the address every time I'd keep the VDP copy. However, note that going to 80 columns would double the amount of work this function needs to do. Perhaps using some of the newfound memory as a 'dirty' flag would help - you could simply tag each line as dirty or not, and an unchanged screen would only need to read 24 bytes of CPU memory, and a changed screen would only need to copy the changed lines - which are often not many. 
 
 We have many more disk devices these days. Even though the pCode scans all devices, it appears that disks only work on CRU >1100. Understanding this code and fixing it to work across CRUs with the many devices we have now would help the system. Because it functions at the low level sector read/write, this makes some devices tricky. But because it operates inside a large 'PASCAL' file on the TI file system, replacing that with the *file* sector read/write function suddenly opens it up to a lot of devices - even TIPI.
+
+Fixing the TIPI - Claude analyzed and found these notes of value:
+
+  1. How the p-system finds and uses the disk controller
+
+  - It only uses sector I/O. All disk access for units #4, #5 and #9–#30 goes through the level-2 subprogram >10, never
+    through file-level calls. The routines are DSKREAD/DSKWRIT ? BLOCKIO (5892) ? PERCALL (33F6) ? DSRSRCH (337E).
+  - The first card wins. DSRSRCH checks CRU >1000 to >1F00 and picks the first card whose >400A list contains a 1-byte
+    name >10. It then stores that card's entry address and CRU in the drive's control block in VDP RAM. With TIPI at
+    >1100 and nothing lower, TIPI handles every p-system block.
+  - At startup it grabs that card's VDP buffers. The disk control block is first written at VDP >0000, so the search
+    stores the found CRU at VDP >0004. In the sim with the TI controller, VDP >0004 = >11 is written by VMBW at pc 479E.
+    The startup code at 20F2 reads that value back. It then looks for a VDP buffer header (AA, prev-top, CRU byte,
+    nfiles) carrying the same CRU byte and shrinks that controller's area to 283 bytes. TIPI's onreset writes a matching
+    fake header (>37D7, AA 3F FF 11 03), but only when it sits at >1100. So at >1100 this step works, and it does no
+    harm because TIPI doesn't use those buffers. Startup is not where things break.
+    
+  2. Where TIPI's sector routine (level2.a99) breaks the p-system's assumptions
+
+  1. Writes always fail. The code comment says "Read a sector from a synthesized disk, error on write", and next to the
+     success check: "TIPI python side will not return success for write operations". Every p-system block write will
+     error (Filer, editor save, compiler output, directory updates).
+  2. Reads only work if the Pi supplies raw sectors. A UCSD volume needs raw blocks (block n = sectors 2n and 2n+1). If
+     DSKx is a directory on the Pi, the most TIPI can return is TI-format sectors. The p-system will then see no valid
+     volume, or read garbage, unless the Pi side can serve a raw image. That's the part I can't check from here.
+  3. Error codes don't match. The p-system translates only the TI controller's raw codes, using the table SECTERR at
+     2CEE: >06?9, >07?17, >34?16. Any other value is copied straight into IORESULT. TIPI encodes errors as code SRC 3,
+     giving >20, >60, >C0, >E0 and so on. None of these are in the table, so users see odd IORESULTs such as 192 or 224
+     instead of normal messages. This probably explains the "odd" reports.
+  4. A Pi error code of 0 looks like success. TIPI's EDVNAME is >00, and >00 SRC 3 is still >00, so the p-system sees
+     success. No data has been transferred, though, so the buffer at >3F00 still holds the previous sector and the
+     p-system uses it as if it were new. That can cause quiet corruption or strange directory contents.
+  5. It never lets the next controller try. sector always returns with INCT R11 ("handled"), even on error. PERCALL only
+     moves on to the next card (NEWSRC) when a DSR returns without the skip. So a real controller at a higher CRU, such
+     as an HFDC at >1200, is never reached while TIPI is at >1100.
+
+  Things I checked that are fine: TIPI leaves GPLWS R13–R15 alone (the p-system reads R15 back as >8C02). Its LIMI 0 is
+  undone by PERCALL's RTWP. The name match on >10 works, the read/write flag (FF/01 = read) is handled correctly, and
+  the p-system never calls >16 FILES. Everything here applies to both the original card and the cart, because the cart
+  keeps this logic unchanged apart from relocation.
+
+  Questions and possible fixes
+
+  - Does TIPI's Pi side support raw sector reads/writes on an image mounted as DSKx? If it doesn't, the p-system can't
+    use TIPI as a disk, and a fix would have to come from the TIPI side.
+  - Fixes possible in the cart:
+    - Map unknown error bytes to sensible IORESULTs in the DSKFAIL path.
+    - Have DSRSRCH skip a card that is TIPI and keep searching. TIPI can be recognised by its recvmsg/sendmsg pointers
+      at >4010–>4016.    
+      
+I think the solution to fixing TIPI, PPEB, and multiple controllers is the same - when we add the extra pages of ROM code, we replace the sector read and sector write functions for disks. These new functions then can:
+
+1) Initialization can search for *all* devices that support sector read (at a minimum), and enable them. Since the first user disk is unit 4 and we stole the last one 12 for our romdisk, that allows 4-11 which is 8 drives... that should be plenty. That would allow a TIPI and a real disk, or a ramdisk. Basically we'll capture the first 8 drives and enable them early, then let the normal system perform the search for valid mounts. We'll need to create our own table (in GRAM? If the VDP is only 8k, then we have a separate 4k GRAM available) in the order we find devices that contains the CRU, the devicename (ie: "DSK1" - up to 7 chars each)... and probably something I'm forgetting. This lets us speed up multiple drives by not needing to search for every call. We also need a FILES(1) at the start to init VDP.
+2) Read and write are replaced with record access of the file "PASCAL", which is already DIS/FIX128. Per the Megademo notes, this is not much slower than per-file sector access, as long as it's sequential, and will work with any device. If every sector read is open/read 2 records/close, we don't need to worry about concurrent access. But we DO need to be aware that the top of VDP RAM will be used and make sure we understand the remaining pCode VDP RAM usage. This will be slightly slower.
+3) I can drop the flashdisk overtop of something else, perhaps, rather than take one of the 8 remaining drives?
+4) I wonder if the editor loading to VDP is a VDP disk device? "Drive loaded to VDP" would need to be disabled or limited to protect the new VDP RAM usage.
