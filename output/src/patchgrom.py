@@ -216,6 +216,18 @@ if os.environ.get('GROMCONSOLE')=='1':
     else:
         print("WARN: UNITPNT[#12] @GROM 0xEEB4 not as expected (=%04X), ROM disk not installed"%w(0xEEB4))
 
+# GRAM code pool (UberGROM base 3, see ramhelp.s): the pool keeps fake VDP addresses
+# >4000-7BFE (GRAM = V + >2000), and pool code reads through r13 = >980C.
+# Startup code chunk: GROM = RAM + 0xC804. Kernel data chunk: GROM = RAM + 0xC27C.
+if os.environ.get('GROMCONSOLE')=='1':
+    assert w(0xEF78)==0x8800, "CODREAD[2] @GROM EF78 = %04X"%w(0xEF78)
+    setw(0xEF78,0x980C)                                   # CODREAD[2] (RAM 2CFC): pool read port
+    assert w(0xE822)==0x0201 and w(0xE824)==0x0DF8, "INTMEM init @GROM E822"
+    setw(0xE824,0x4000)                                   # RAM 201E: li r1,>4000 -> INTMEM
+    assert w(0xEA22)==0x0607 and w(0xEA24)==0xC807 and w(0xEA26)==0x2782, "TOPMEM store @GROM EA22"
+    setw(0xEA22,0xC820); setw(0xEA24,ramsym('GRAMTOP')); setw(0xEA26,0x2782)   # RAM 221E: mov @GRAMTOP,@TOPMEM
+    print("GRAM pool: CODREAD[2]=980C, INTMEM=4000, TOPMEM=@GRAMTOP (7BFE)")
+
 outname = 'cartgrom_b.bin' if os.environ.get('GROMCONSOLE')=='1' else 'cartgrom.bin'
 open(outname,'wb').write(g)
 print("wrote %s (%d bytes)"%(outname,len(g)))

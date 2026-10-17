@@ -58,6 +58,7 @@ static inline void gromInc(uint16_t &a){ uint16_t base=a&0xE000; a=((a+1)&0x1FFF
 
 // console GROM state
 static uint16_t cgAddr=0, cgAccess=2; static uint8_t cgPre=0;
+static uint16_t cgPreAddr=0;    // GROM address of the byte in cgPre (the 'current' address a data access hits)
 // p-code GROM state
 static uint16_t pgAddr=0, pgAccess=2; static uint8_t pgPre=0;
 
@@ -144,6 +145,86 @@ static long  postKscan=0;      // --postkscan N: inject postKeys after the Nth K
 #include <map>
 static std::map<long,char> keySched;  // --keysched "kscan:char,...": inject char exactly when g_kscanHits==kscan (program-relative, fully reproducible)
 
+// ---------------------------------------------------------------- UberGROM
+// --ubergrom FLASH EEPROM: model the UberGROM (ATmega1284) the way its firmware does
+// (/mnt/d/work/Atmel/ubergrom main.c GetDevicePointer, grom.c, ram.c, eeprom.c, boothack.c).
+// It follows the console GROM address (it has no address readback, so the console GROMs
+// own the counter); with the rollover flag clear it wraps within 8K like them. It answers
+// only for GROM addr >=6000, at the address of the byte actually read/written (cgPreAddr). Map byte for (base,slot) is
+// EEPROM[2+base*16+slot] (bases flag on) with its inverse at +8. Device = byte>>4:
+// 0 RAM (15K: page0 8K, page1 7K), 1 GROM (flash pages 0-14), 2 EEPROM; 3-7 not modelled.
+// EEPROM and RAM writes stay in memory (never saved). Write-protect pin is assumed off.
+static bool     ugOn=false;
+static uint8_t  ugFlash[0x20000];        // AVR flash image: GROM page n at n*0x2000, AVR program at 0x1E000
+static uint8_t  ugEe[0x1000];            // config EEPROM
+static const int UG_RAMSIZE=15*1024;     // ram.c RAMSIZE
+static uint8_t  ugRam[UG_RAMSIZE];
+static uint8_t  ugOverride=0xff;         // boothack recovery state (power-up only)
+static uint8_t  ugLock=1;                // EEPROM unlock sequence state (>55,>AA,>5A to base15 >FFFF)
+static int      ugPage=0;                // HandlerPage of the current access
+static bool     ugRoll=false;            // EEPROM flag >04: UberGROM addresses >=6000 count straight across 8K slots
+static FILE*    g_uglog=nullptr;         // --uglog FILE: log RAM/EEPROM device accesses
+static bool     g_pooltrap=false;        // --vdppooltrap: report VDP data accesses to the vacated old pool >0DF8-3E3B
+static long     g_pooltrapN=0;
+static void poolTrap(const char*rw,uint16_t va){
+    if(!g_pooltrap || !reachedEntry || va<0x0DF8 || va>0x3E3B) return;
+    if(g_pooltrapN++<20){ uint16_t np=(g_pc>=0x6000&&g_pc<0x8000)?g_pc-0x2000:g_pc; fprintf(stderr,"[VDPPOOL %s %04X pc=%04X(n%04X) insn=%ld]\n",rw,va,g_pc,np,insnCount); }
+}
+// boothack.c minirom: the power-up hook served at base 0 >E000 until >E00D is read
+static const uint8_t ugMinirom[]={0xaa,0x01,0x00,0x00,0xe0,0x0c,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,
+    0xe0,0x10,0xbe,0x74,0x05,0x03,0xd6,0x75,0x20,0x40,0x1A,0x0A,0xbd,0x90,0x73,0x90,0x72,0x96,0x72,0x00};
+enum { UG_NONE=-1, UG_RAM=0, UG_GROM=1, UG_EEPROM=2, UG_BOOTHACK=100 };
+
+// main.c GetDevicePointer: which device answers the current address on this base
+static int ugDevice(int base,uint16_t ugAddr){
+    if(ugAddr<0x6000) return UG_NONE;
+    if(base==15 && ugAddr>=0xF800){ ugPage=0xff; return UG_EEPROM; }
+    uint8_t x=ugEe[0]; if(x!=(uint8_t)~ugEe[1]) x=0;
+    if(ugOverride){
+        if(x&2) ugOverride=0;
+        else {
+            if((ugOverride&0x80) && (ugAddr&0xE000)==0xE000 && base==0){ ugPage=(ugAddr&0xE000)>>8; return UG_BOOTHACK; }
+            if(ugOverride==0x01 && (ugAddr&0xE000)==0x6000 && base<=1){ ugPage=(ugAddr&0xE000)>>8; return UG_BOOTHACK; }
+        }
+    }
+    int n=(x&1) ? (base<<4)+(ugAddr>>13)+2 : (ugAddr>>13)+2;
+    uint8_t v=ugEe[n], c=~ugEe[n+8];
+    if(v!=c) return UG_NONE;
+    ugPage=v&0xf;
+    int t=v>>4;
+    if(t>2){ static bool warned[16]; if(!warned[t]){ warned[t]=true; fprintf(stderr,"[UG] device type %d (base %d >%04X) not modelled\n",t,base,ugAddr); } return UG_NONE; }
+    return t;
+}
+// returns the byte the UberGROM drives on a data read, or -1 if it leaves the bus alone
+static int ugRead(int base,uint16_t ugAddr){
+    int d=ugDevice(base,ugAddr), off=ugAddr&0x1fff, r=-1;
+    switch(d){
+    case UG_RAM:  { int fa=(ugPage<<13)+off; if(fa<UG_RAMSIZE) r=ugRam[fa]; break; }
+    case UG_GROM: if(ugPage<15) r=ugFlash[(ugPage<<13)+off]; break;
+    case UG_EEPROM: { int p=ugPage, a=off; if(p==0xff){ p=0; a-=0x1800; } if(p==0 && a>=0 && a<0x1000) r=ugEe[a]; break; }
+    case UG_BOOTHACK: { uint16_t a=off|(ugPage<<8); r=0;
+        if(a>=0xe000){ if(a-0xe000<(int)sizeof(ugMinirom)) r=ugMinirom[a-0xe000]; }
+        else { static bool w=false; if(!w){ w=true; fprintf(stderr,"[UG] recovery GROM requested (SPACE held at power-up): not modelled, reads 0\n"); } }
+        if(ugOverride==0xff){ if(a==0xe019) ugOverride=0x81; if(a==0xe01a) ugOverride=0x80; }
+        else if((ugOverride&0x80) && a==0xe00d) ugOverride&=0x0f;
+        break; }
+    }
+    if(g_uglog && (d==UG_RAM||d==UG_EEPROM)) fprintf(g_uglog,"R base=%d %04X dev=%d page=%X -> %02X pc=%04X\n",base,ugAddr,d,ugPage,r&0xff,g_pc);
+    return r;
+}
+static void ugWrite(int base,uint16_t ugAddr,uint8_t c){
+    int d=ugDevice(base,ugAddr), off=ugAddr&0x1fff;
+    if(g_uglog && (d==UG_RAM||d==UG_EEPROM)) fprintf(g_uglog,"W base=%d %04X dev=%d page=%X <- %02X pc=%04X\n",base,ugAddr,d,ugPage,c,g_pc);
+    if(d==UG_RAM){ int fa=(ugPage<<13)+off; if(fa<UG_RAMSIZE) ugRam[fa]=c; }
+    else if(d==UG_EEPROM){ int p=ugPage, a=off;
+        if(p==0xff){
+            if(a==0x1fff){ switch(ugLock){ case 0x01: ugLock=(c==0x55)?c:1; break; case 0x55: ugLock=(c==0xaa)?c:1; break;
+                                            case 0xaa: ugLock=(c==0x5a)?c:1; break; case 0x5a: if(c!=0x5a) ugLock=1; break; default: ugLock=1; }
+                           return; }
+            p=0; a-=0x1800; }
+        if(p==0 && a>=0 && a<0x1000){ if(ugLock!=0x5a) ugLock=1; else { ugEe[a]=c; ugRoll=(ugEe[0]==(uint8_t)~ugEe[1]) && (ugEe[0]&4); } } }
+}
+
 // ============================================================ TI99 class
 class TI99 : public TMS9900 {
 public:
@@ -188,6 +269,7 @@ public:
     //   base1 covers p-code addr 0xA000-0xF7FF at console 0x6000-0xB7FF (pcode = C+0x4000)
     uint8_t cgromByte(int base, uint16_t a){
         if (a < 0x6000) return a<sizeof(conGrom)?conGrom[a]:0;   // console GROMs, any base
+        if (ugOn) return 0;                                       // >6000+ is served by the UberGROM (ugRead)
         if (gromConsole){
             // base0 & base1 = SAME GROM (chips 0-4, pcode 0-0x9FFF); base1 is a duplicate
             // of base0 to work around the console's base0-vs-base1 diff bug. base2 = the
@@ -204,27 +286,34 @@ public:
         }
         return 0;
     }
+    // advance the shared GROM counter. With the UberGROM rollover flag set, addresses >=6000
+    // (which only the UberGROM drives) count across slots; console GROM space still wraps.
+    void cgInc(){ if(ugOn && ugRoll && cgAddr>=0x6000 && cgAddr!=0xffff) cgAddr++; else gromInc(cgAddr); }
     uint8_t cgromRead(uint16_t x){
         int base=(x&0x3C)>>2;
-        if (x&0x0002){ cgAccess=2; uint8_t z=(cgAddr>>8)&0xff; cgAddr=((cgAddr&0xff)<<8)|(cgAddr&0xff); return z; }
+        if (x&0x0002){ cgAccess=2; uint8_t z=(cgAddr>>8)&0xff; cgAddr=((cgAddr&0xff)<<8)|(cgAddr&0xff);
+                       return z; }
         else { cgAccess=2; uint8_t z=cgPre; bool cart=(cgAddr>=0x6000);
+            if(ugOn){ int v=ugRead(base,cgPreAddr); if(v>=0) z=(uint8_t)v; }
             if(reachedEntry && cgAddr>=0x6010 && cgAddr<0x6150){ uint16_t np=(g_pc>=0x6000&&g_pc<0x8000)?g_pc-0x2000:g_pc; fprintf(stderr,"[ROMDISK-META read cg=%04X pc=%04X]\n",cgAddr,np); }
             if(g_basewarn && reachedEntry && base==2 && cgAddr>=0xB800)
                 fprintf(stderr,"[BASEWARN base2 read of base0 addr cg=%04X (pcode0=%04X) pc=%04X]\n",cgAddr,(uint16_t)(cgAddr-0x6000),g_pc);
-            cgPre=cgromByte(base,cgAddr); gromInc(cgAddr); if(g_readlog&&reachedEntry&&cart) fprintf(g_readlog,"%02X\n",z); return z; }
+            cgPreAddr=cgAddr; cgPre=cgromByte(base,cgAddr); cgInc(); if(g_readlog&&reachedEntry&&cart) fprintf(g_readlog,"%02X\n",z); return z; }
     }
     void cgromWrite(uint16_t x,uint8_t c){
         int base=(x&0x3C)>>2;
-        if (x&0x0002){ if(g_readlog&&reachedEntry) fprintf(g_readlog,"CW base=%d c=%02X cg=%04X pc=%04X\n",base,c,cgAddr,g_pc); cgAddr=(cgAddr<<8)|c; cgAccess--; if(cgAccess==0){cgAccess=2;
+        if (!(x&0x0002)){ if(ugOn){ ugWrite(base,cgPreAddr,c); cgPreAddr=cgAddr; cgPre=cgromByte(base,cgAddr); cgInc(); } return; }  // data write (GRAM)
+        if (x&0x0002){
+            if(g_readlog&&reachedEntry) fprintf(g_readlog,"CW base=%d c=%02X cg=%04X pc=%04X\n",base,c,cgAddr,g_pc); cgAddr=(cgAddr<<8)|c; cgAccess--; if(cgAccess==0){cgAccess=2;
             if(reachedEntry && base<=1 && cgAddr>=0x6010 && cgAddr<0x60E0){ uint16_t np=(g_pc>=0x6000&&g_pc<0x8000)?g_pc-0x2000:g_pc; fprintf(stderr,"[IDX base%d cg=%04X nativePC=%04X]\n",base,cgAddr,np); }
-            cgPre=cgromByte(base,cgAddr);
+            cgPreAddr=cgAddr; cgPre=cgromByte(base,cgAddr);
             if(g_setlog && reachedEntry && cgAddr>=0x6000){ static int sc=0; if(sc<200){sc++; fprintf(g_setlog,"SET base=%d cg=%04X val=%02X\n",base,cgAddr,cgPre);} }
-            gromInc(cgAddr);} }
+            cgInc();} }
     }
     // ---- VDP ----
     uint8_t vdpRead(uint16_t x){
         if (x&2){ uint8_t s=vdpStatus; vdpStatus&=~0x80; vdpIntPending=false; vdpLatched=0; return s; }
-        else { uint8_t z=vdpPrefetch; vdpPrefetch=vram[vdpAddr&0x3fff]; vdpAddr=(vdpAddr+1)&0x3fff; vdpLatched=0; return z; }
+        else { uint8_t z=vdpPrefetch; poolTrap("rd",(vdpAddr-1)&0x3fff); vdpPrefetch=vram[vdpAddr&0x3fff]; vdpAddr=(vdpAddr+1)&0x3fff; vdpLatched=0; return z; }
     }
     void vdpWrite(uint16_t x,uint8_t c){
         if (x&2){ // address/register port
@@ -240,7 +329,7 @@ public:
                        if(g_vdptrace&&reachedEntry&&g_kscanHits>=g_vdpafterkscan){uint16_t np=(g_pc>=0x6000&&g_pc<0x8000)?g_pc-0x2000:g_pc; fprintf(g_vdptrace,"SETADDR %04X (raw hi=%02X lo=%02X) pc=%04X\n",vdpAddr,hi,vdpFirst,np);}
                        if((hi&0xC0)==0x00){ vdpPrefetch=vram[vdpAddr&0x3fff]; vdpAddr=(vdpAddr+1)&0x3fff; } }
             }
-        } else { if(g_vdptrace&&reachedEntry&&g_kscanHits>=g_vdpafterkscan){uint16_t np=(g_pc>=0x6000&&g_pc<0x8000)?g_pc-0x2000:g_pc; fprintf(g_vdptrace,"%04X=%02X pc=%04X\n",vdpAddr&0x3fff,c,np);} vram[vdpAddr&0x3fff]=c; vdpPrefetch=c; vdpAddr=(vdpAddr+1)&0x3fff; vdpLatched=0; }
+        } else { if(g_vdptrace&&reachedEntry&&g_kscanHits>=g_vdpafterkscan){uint16_t np=(g_pc>=0x6000&&g_pc<0x8000)?g_pc-0x2000:g_pc; fprintf(g_vdptrace,"%04X=%02X pc=%04X\n",vdpAddr&0x3fff,c,np);} poolTrap("wr",vdpAddr&0x3fff); vram[vdpAddr&0x3fff]=c; vdpPrefetch=c; vdpAddr=(vdpAddr+1)&0x3fff; vdpLatched=0; }
     }
     // ---- memory dispatch (byte) ----
     uint8_t rb(uint16_t a){
@@ -367,6 +456,7 @@ int main(int argc,char**argv){
     long maxInsns=20000000;
     const char*cartFile=nullptr;
     const char*dsrCfile=nullptr,*dsrDfile=nullptr,*gromFile=nullptr;
+    const char*ugFlashFile=nullptr,*ugEeFile=nullptr,*ugDumpFile=nullptr;
     int dumpAt=-1; long snapPc=-1; bool snapped=false; long snapKscan=0; long snapSkip=0; long snapInsn=0; long snapMem=-1;
     for(int i=1;i<argc;i++){
         std::string a=argv[i];
@@ -413,6 +503,10 @@ int main(int argc,char**argv){
         else if(a=="--gromanalysis") g_gromanalysis=true;
         else if(a=="--gromfromcart") gromFromCart=true;
         else if(a=="--gromconsole") gromConsole=true;
+        else if(a=="--ubergrom"&&i+2<argc){ ugFlashFile=argv[++i]; ugEeFile=argv[++i]; }
+        else if(a=="--uglog"&&i+1<argc) g_uglog=fopen(argv[++i],"w");
+        else if(a=="--vdppooltrap") g_pooltrap=true;
+        else if(a=="--ugdump"&&i+1<argc) ugDumpFile=argv[++i];
         else if(a=="--gromreadlog"&&i+1<argc) g_readlog=fopen(argv[++i],"w");
         else if(a=="--gromsetlog"&&i+1<argc) g_setlog=fopen(argv[++i],"w");
         else if(a=="--gromdrv") g_gromdrv=true;
@@ -444,6 +538,18 @@ int main(int argc,char**argv){
         fseek(f,0,SEEK_END); long n=ftell(f); fseek(f,0,SEEK_SET); cart.resize(n); fread(cart.data(),1,n,f); fclose(f);
         int banks=n/0x2000; int m=1; while(m<banks) m<<=1; cartBankMask=m-1;
         fprintf(stderr,"cart %s: %ld bytes, %d banks, mask %X\n",cartFile,n,banks,cartBankMask);
+    }
+    if(ugFlashFile){
+        int fn=loadFile(ugFlashFile,ugFlash,sizeof(ugFlash)), en=loadFile(ugEeFile,ugEe,sizeof(ugEe));
+        if(fn!=(int)sizeof(ugFlash)||en!=(int)sizeof(ugEe)){ fprintf(stderr,"ubergrom: need 128K flash + 4K EEPROM (got %d, %d)\n",fn,en); return 1; }
+        ugOn=true;
+        uint8_t fl=ugEe[0]; bool fok=(fl==(uint8_t)~ugEe[1]); if(!fok) fl=0;
+        fprintf(stderr,"ubergrom: %s + %s, flags %02X%s (bases %s, recovery %s, rollover %s)\n",ugFlashFile,ugEeFile,fl,fok?"":" (invalid, using 00)",
+                fl&1?"on":"off",fl&2?"off":"on",fl&4?"on":"off");
+        ugRoll=(fl&4)!=0;
+        static const char*dn[]={"RAM","GROM","EEPROM","GPIO","ADC","UART","FLASH","TIMER"};
+        for(int b=0;b<((fl&1)?16:1);b++) for(int sl=3;sl<8;sl++){ int n=2+b*16+sl; uint8_t v=ugEe[n];
+            if(v==(uint8_t)~ugEe[n+8]) fprintf(stderr,"ubergrom:   base %2d >%04X = %02X %s page %d\n",b,sl<<13,v,(v>>4)<8?dn[v>>4]:"?",v&15); }
     }
     fprintf(stderr,"mode=%s pgGromLen=%d\n",mode,pgGromLen);
 
@@ -574,6 +680,10 @@ int main(int argc,char**argv){
     { fprintf(stderr,"recent PCs:"); for(int k=1;k<=32;k++) fprintf(stderr," %04X",pcring[(pcringi-k)&63]); fprintf(stderr,"\n"); }
     if(!g_vdpliFile.empty()){ FILE*vf=fopen(g_vdpliFile.c_str(),"w"); for(long p:g_vdpli) fprintf(vf,"%04lx\n",p); fclose(vf); fprintf(stderr,"VDP-address li's (feed 0x8C02): %zu -> %s\n",g_vdpli.size(),g_vdpliFile.c_str()); }
     fprintf(stderr,"GROM chips accessed (bitmask, bit N=chip N): %02X\n",g_chipmask);
+    if(ugOn) fprintf(stderr,"ubergrom: override=%02X lock=%02X\n",ugOverride,ugLock);
+    if(g_pooltrap) fprintf(stderr,"vdppooltrap: %ld VDP data accesses to >0DF8-3E3B after entry\n",g_pooltrapN);
+    if(ugOn && ugDumpFile){ FILE*uf=fopen(ugDumpFile,"wb"); fwrite(ugRam,1,UG_RAMSIZE,uf); fwrite(ugEe,1,sizeof(ugEe),uf); fclose(uf);
+        fprintf(stderr,"ubergrom: dumped RAM (15K) + EEPROM (4K) to %s\n",ugDumpFile); }
     fprintf(stderr,"total KSCAN hits=%ld, keys consumed=%zu/%zu, consoleGROM cgAddr=%04X\n",g_kscanHits,keyIdx,keyQueue.size(),cgAddr);
     if(g_gromanalysis){
         const char*rn[3]={"scratchpad(8300-83FF)","cartROM(6000-7FFF)","other"};

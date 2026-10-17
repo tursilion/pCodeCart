@@ -351,3 +351,26 @@ I think the solution to fixing TIPI, PPEB, and multiple controllers is the same 
 2) Read and write are replaced with record access of the file "PASCAL", which is already DIS/FIX128. Per the Megademo notes, this is not much slower than per-file sector access, as long as it's sequential, and will work with any device. If every sector read is open/read 2 records/close, we don't need to worry about concurrent access. But we DO need to be aware that the top of VDP RAM will be used and make sure we understand the remaining pCode VDP RAM usage. This will be slightly slower.
 3) I can drop the flashdisk overtop of something else, perhaps, rather than take one of the 8 remaining drives?
 4) I wonder if the editor loading to VDP is a VDP disk device? "Drive loaded to VDP" would need to be disabled or limited to protect the new VDP RAM usage.
+
+----
+
+There's no general-purpose malloc for VDP RAM. VDP holds the p-System's primary code pool, and the routine that places code there is the kernel's segment loader, SEGLOAD at >5A9E. In the cart build that's L5a9e in build/c5.s:2906, at the card address +>2000 in the cart image like the rest of the relocated code. I took everything below from Anders Persson's disassembly (expert/Even better Disassembly p-system.pdf, pages 82–105).
+
+- INTMEM @>2780 is the bottom of the pool, initialised to >0DF8. Below it are the screen, tables, keyboard buffer
+(>0BE0) and layout area (>0D80).
+- TOPMEM @>2782 is the top of the pool. Startup sets it at >2220 (MOV R7,@TOPMEM), after carving the PCBs for the
+printer, REMOTE:, the thermal printer and drive 4, plus the disk buffer (DSKBUF = >3F00), off the top of VDP.
+- The Pascal heap and stack are not in VDP. Heap_Info (>3614, HeapTop ˜ >BDF2) is in CPU high RAM. VDP holds only code segments.  
+
+No, it's about 12K.
+
+- Bottom: INTMEM = >0DF8.
+- Top: TOPMEM = >3E3C in the running snapshot the disassembly was taken from.
+- Size: >3E3C - >0DF8 = >3044, which is 12,356 bytes, or about 6,178 words.
+
+The disassembly comment says >3EDF, which gives 12,519 bytes. But TOPMEM isn't fixed. Startup works down from the top of VDP and subtracts the disk buffer and the PCBs for drive 4, the printer, REMOTE: and the thermal printer
+(>21DC–>2220). So the exact top depends on what gets set up, and it could come out slightly different in the cart
+build. To get the real number, read the word at >2782 in the sim after boot.
+
+VDP is 16K in total. The bottom ~3.5K (>0000–>0DF7) holds the screen, pattern tables, keyboard buffer and layout. The top ~0.4K holds the PCBs and the disk buffer at >3F00. The roughly 12K in between is all code pool.
+

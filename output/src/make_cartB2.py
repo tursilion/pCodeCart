@@ -6,7 +6,7 @@ plus a small loader bank that stages the RAM helper at boot.
 
   bank0 = patched DSR bank C   bank1 = patched DSR bank D
   bank2 = boot loader @6100 + ramhelp bytes @6118 (copied to 0x3A00)
-  bank3 = pad
+  bank3 = GRAM code pool routines @6100 (gram.s)
 
 Every bank carries: header (AA + program-list ptr @6006 -> record @6008),
 record @6008 (free DSR header zeros), and the tail stubs:
@@ -51,6 +51,11 @@ setw(L,0x10E,0x0600)                          # dec r0
 setw(L,0x110,0x16FD)                          # jne loop (-3)
 setw(L,0x112,0x0460); setw(L,0x114,0x7FF8)   # b @7FF8 (STARTSTUB)
 L[0x118:0x118+len(rh)]=rh                     # ramhelp source bytes
+
+# bank3: GRAM code pool routines (gram.s, linked at >6100) after the header/record
+g3=open('gram.bin','rb').read()
+assert len(g3)<=0x1FF0-0x100, "gram.bin too big: %d"%len(g3)
+banks[3][0x100:0x100+len(g3)]=g3
 
 for bk in banks: add_common(bk)
 

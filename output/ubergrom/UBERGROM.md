@@ -20,7 +20,7 @@ are 64 banks of 8K, and writing to `>6000+2n` selects bank n.
 | 0 | DSR code C |
 | 1 | DSR code D |
 | 2 | Boot loader and RAM helpers |
-| 3 | Stubs |
+| 3 | Stubs + GRAM code pool routines at `>6100` (`gram.s`) |
 | 4‑48 | ROM disk `#12 PSYS:` |
 | 49‑63 | Copies of bank 3 |
 
@@ -53,11 +53,14 @@ The firmware (`main.c`) reads the configuration as follows:
 Everything else in the file is `>00`. A `>00` byte with a `>00` inverse is
 invalid, so those slots are unmapped, the same as in the example.
 
-**Flags:** `>01` / `>FE`. This is the same as the example:
+**Flags:** `>05` / `>FA`. The example has `>01`; this adds rollover:
 * GROM bases enabled.
 * Recovery program still enabled (hold SPACE at power‑up).
-* Rollover off, so addresses wrap within each 8K slot like real GROMs. The p‑code
-  skips the GROM gaps itself.
+* Rollover on. The code pool in GRAM is one 15K block, so the p‑code fetch has to run
+  straight from `>7FFF` to `>8000`. The p‑System never reads the GROM address back,
+  so it doesn't matter that the UberGROM's address then differs from the console
+  GROMs'. The p‑code GROM on bases 0‑2 always sets the address again at each chip
+  step, so rollover doesn't affect it.
 
 **Slot map:**
 
@@ -66,25 +69,76 @@ invalid, so those slots are unmapped, the same as in the example.
 | 0 (`>9800`) | GROM p0 `>10` | p1 `>11` | p2 `>12` | p3 `>13` | p4 `>14` |
 | 1 (`>9804`) | GROM p0 `>10` | p1 `>11` | p2 `>12` | p3 `>13` | p4 `>14` |
 | 2 (`>9808`) | GROM p5 `>15` | p6 `>16` | p7 `>17` | — | — |
+| 3 (`>980C`) | GRAM RAM p0 `>00` | GRAM RAM p1 `>01` | — | — | — |
 | 15 (`>983C`) | — | — | — | — | Flash ctrl `>60` |
 
 Raw bytes:
 
 ```
->000: 01 FE                                   flags / inverse
+>000: 05 FA                                   flags / inverse
 >002: 00 00 00 10 11 12 13 14  00 00 00 EF EE ED EC EB   base 0
 >012: 00 00 00 10 11 12 13 14  00 00 00 EF EE ED EC EB   base 1
 >022: 00 00 00 15 16 17 00 00  00 00 00 EA E9 E8 00 00   base 2
+>032: 00 00 00 00 01 00 00 00  00 00 00 FF FE 00 00 00   base 3 (GRAM)
 >0F9: 60   >101: 9F                           base 15 >E000 = flash controller
 ```
 
 The `00/00` pairs (the console slots `>0000‑>5FFF`, which the firmware ignores
 anyway, and the unused base 2 slots) are invalid, so those slots are unmapped.
 
+* Base 3 is the 15K GRAM (UberGROM RAM, device 0). See "GRAM" below.
 * Bases 0 and 1 map the same pages. The cart needs this (see `output/bin/LOAD.md`),
   and it also keeps the console from showing REVIEW MODULE LIBRARY.
 * Base 15 `>F800‑FFFF` is always the configuration EEPROM, whatever the map says.
   The flash controller sits at `>E000` on that base, as in the example.
+
+## GRAM (base 3)
+
+The UberGROM's 15K of RAM is mapped on base 3, the first base the cartridge doesn't use.
+It reads and writes like GRAM through the base 3 ports.
+
+| Port | Use |
+|------|-----|
+| `>980C` | read data |
+| `>9C0C` | write data |
+| `>9C0E` | write address (high byte, then low byte) |
+
+| GROM address (base 3) | Device | Size |
+|---|---|---|
+| `>6000‑>7FFF` | RAM page 0 | 8K |
+| `>8000‑>9BFF` | RAM page 1 | 7K |
+| `>9C00‑>9FFF` | RAM page 1, past the end | reads aren't driven, writes are dropped |
+
+* The RAM is cleared at power‑up. AVR `.bss` is zero‑initialised, and nothing is kept
+  across a power cycle.
+* Rollover is on (flag `>04`), so `>7FFF` is followed by `>8000`, and the 15K
+  runs as one block.
+* The emulator or device must support rollover. A Classic99 build without
+  rollover support breaks segment loads (for example "Segment EDITCORE not found").
+
+### The p‑System code pool lives here
+
+The primary code pool, which used to be in VDP RAM, is now all of the GRAM. The
+p‑System still thinks it is VDP: segments keep code type `R15 = -1`, and the pool
+uses "fake VDP" addresses.
+
+| | Old (VDP) | Now (GRAM) |
+|---|---|---|
+| `INTMEM` (RAM `>2780`) | `>0DF8` | `>4000` |
+| `TOPMEM` (RAM `>2782`) | `>3E3C` | `>7BFE` |
+| Pool size | about 12K | about 15K |
+| Code read port (`CODREAD[2]`, `R13`) | `>8800` | `>980C` |
+
+* **Mapping:** fake address V is stored at GRAM `V + >2000` on base 3. Real VDP
+  buffer addresses are always below `>4000`, so any address of `>4000` or more is in
+  the pool.
+* **VDP freed:** VDP `>0DF8‑>3E3B` is no longer used. Only the startup VDP‑size
+  probe touches it.
+* **Where the code is:**
+  * Hot paths are RAM helpers in `build/ramhelp.s` (`LOADAD1`/`GETDAT`/`GETDAT2`,
+    `ADDRCOP`'s `VDP1`, the BIOS sector copy `VDPMOV`, and the ROM‑disk driver).
+  * The segment compactor and the real‑constant write‑back are in cart bank 3
+    (`build/gram.s`).
 
 ## Notes / differences from the example
 

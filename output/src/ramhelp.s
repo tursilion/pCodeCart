@@ -12,14 +12,25 @@
 ; RAM temps: 0x3FF4 = r0 save (HELP4F70*), 0x3FF6 = r0 save, 0x3FF8 = r11 save.
 ;
 ; Reserved low-memory map (0x3A00-0x3FFF):
-;   0x3A00-0x3DFF  RAM helpers (this file, up to .org 0x400)
-;   0x3E00-0x3E97  ROM disk driver for unit #12 (ROMDISK2 table + RD2READ)
-;   0x3E98-0x3FF3  free (348 bytes)
+;   0x3A00-0x3DFF  RAM helpers (this file, up to .org 0x400), incl. the GRAM code pool helpers
+;   0x3E00-0x3EC1  ROM disk driver for unit #12 (ROMDISK2 table + RD2READ)
+;   0x3EC2-0x3FF3  free
 ;   0x3FF4-0x3FF9  RAM temps (above)
-;   0x3FFA-0x3FFF  free (6 bytes)
+;   0x3FFA-0x3FFB  r11 save for RAM_VMOV
+;   0x3FFC-0x3FFF  free (4 bytes)
 ; ---------------------------------------------------------------------------
         .text
         .global RAM_A, RAM_B, RAM_C, XLAT, RAM_59B4, RAM_584A, HELP584A, HELP584B, HELP4F70A, HELP4F70B, RAM_50B2, RAM_50C0, HALTRESET
+        .global RAM_VMOV, T_COMPACT, T_CONSTW, RET_B0, GRAMTOP
+
+; ---- GRAM code pool (UberGROM base 3) ----
+; The p-System still thinks the code pool is VDP (code type r15<0) but its "VDP"
+; addresses are fake: INTMEM=>4000, TOPMEM=>7BFE. Pool address V lives in GRAM at
+; G = V + >2000 (>6000-9BFF, base 3). Real VDP buffer addresses are always < >4000,
+; so V >= >4000 means pool. Pool code reads through r13 = >980C (base 3 read data);
+; @>0402(r13) = >9C0E is the base 3 write-address port (GROM order: high byte first).
+GRAMTOP:
+        data 0x7bfe              ; TOPMEM value, stored by the patched startup (RAM >221E)
 
 ; ---- shared: r0 MSB = pcode high byte -> translated high byte in r0 MSB, r13 = base ----
 XLAT:
@@ -38,6 +49,8 @@ XLAT_B1:
 RAM_A:
         mov  r11, @0x3ff8        ; save caller return
         mov  r0,  @0x3ff6        ; save scratch
+        ci   r13, 0x980c         ; GRAM code pool -> set G = r8 + >2000
+        jeq  RA_gram
         ci   r13, 0x8800         ; generic source: r13=8800 (VDP) -> reproduce L4144 w/o xlat
         jeq  RA_vdp
         mov  r15, r15
@@ -58,6 +71,15 @@ RA_done:
         mov  @0x3ff6, r0         ; restore scratch
         mov  @0x3ff8, r11        ; restore return
         b    *r11
+RA_gram:
+        mov  r15, r15
+        jeq  RA_done             ; r15==0: no address change
+        mov  r8, r0
+        ai   r0, 0x2000
+        movb r0, @0x0402(r13)    ; hi
+        swpb r0
+        movb r0, @0x0402(r13)    ; lo
+        jmp  RA_done
 ; VDP (r13=0x8800) address-set: reproduce L4144 with r13 as-is (no translation).
 ; r11/r0 still intact (3FF6/3FF8 saves were copies).
 RA_vdp:
@@ -82,6 +104,8 @@ RAM_B:
         mov  *r1+, r2            ; r15==0 : plain pointer fetch (not GROM), return
         jmp  RB_done
 RB_set:
+        ci   r13, 0x980c         ; GRAM code pool -> set G = r1 + >2000, then read
+        jeq  RB_gram
         ci   r13, 0x8800         ; L4178/L4166 are generic (r13 = GROM / VDP / RAM source).
         jeq  RB_vdp              ;   r13=8800 (VDP read port) -> original passthrough, NO xlat
         mov  r15, r15            ; re-establish r15 status (ci clobbered it)
@@ -119,6 +143,13 @@ RB_done:
 ; ends with `b *r11` to the original caller.
 RB_vdp:
         b    @0x6180
+RB_gram:
+        mov  r1, r0
+        ai   r0, 0x2000
+        movb r0, @0x0402(r13)    ; hi
+        swpb r0
+        movb r0, @0x0402(r13)    ; lo
+        jmp  RB_read
 
 ; ---- reproduction of L4166: same as L4178 (shares L4180 set+read tail) but its
 ; r15==0 path is `mov *r1+,r2 ; if @2ae8==0 then swpb r2`. r15!=0 path is IDENTICAL
@@ -283,23 +314,99 @@ R50_w:
         movb @0x8389, @0x0402(r1)
         mov  @0x3ff4, r0
         b    *r6
+; L50C0 = VDP1 path of the ADDRCOP dispatcher (code type <0, port base r1, address r4,
+; return b *r6). r1=>980C: the E_Rec's segment is in the GRAM pool -> G = r4 + >2000,
+; GROM order. Otherwise the exact original VDP writes (low byte first, untranslated) --
+; menu strings etc. read from real VRAM must keep working (the old Quit-menu bug).
+; WP is PASCALWS, so @>8389 is r4's low byte (unchanged by +>2000).
 RAM_50C0:
-        mov  r0, @0x3ff4
-        movb @0x8389, r0
-        andi r0, 0xff00
-        ci   r0, 0xa000
-        jhe  R50C_b1
-        ai   r0, 0x6000
-        li   r1, 0x9800
-        jmp  R50C_w
-R50C_b1:
-        ai   r0, 0xc000
-        li   r1, 0x9808
-R50C_w:
-        movb r0, @0x0402(r1)
+        ci   r1, 0x980c
+        jeq  R50C_g
+        movb @0x8389, @0x0402(r1)
         movb r4, @0x0402(r1)
-        mov  @0x3ff4, r0
         b    *r6
+R50C_g:
+        ai   r4, 0x2000
+        movb r4, @0x0402(r1)     ; hi
+        movb @0x8389, @0x0402(r1) ; lo
+        ai   r4, -0x2000
+        b    *r6
+
+; VDPMOV (bank D >592C): copy r7 bytes, r0 = from, r1 = to, r8 = VDPWA (>8C02). BIOS
+; disk reads land each sector in DSKBUF (real VDP) and call this to move it to the
+; caller's buffer. Pool side (>= >4000) goes to/from GRAM with each address set once.
+; Contract kept: r0/r1 advance by r7, r7 = 0, r5 clobbered. Entered by `b`, returns b *r11.
+; Pool test is >4000 <= addr < TOPMEM: the original starts with `ori r1,>4000` and returns
+; with that write bit still set, and the BIOS feeds r1 straight back in for the next
+; sector, so a REAL VDP destination arrives as >41xx.. from the 2nd sector on (and the disk
+; write path passes DSKBUF|>4000 = >7F00). The real path therefore runs the original loop
+; via bl and clears the stray >4000 bit from r1 afterwards. r11 is saved at >3FFA.
+RAM_VMOV:
+        ci   r1, 0x4000
+        jl   VM_r1real
+        c    r1, @0x2782         ; TOPMEM
+        jl   VM_tog
+VM_r1real:
+        ci   r0, 0x4000
+        jl   VM_real
+        c    r0, @0x2782
+        jl   VM_fromg
+VM_real:
+        mov  r11, @0x3ffa
+        ori  r1, 0x4000          ; original first instruction
+        bl   @0x7930             ; rest of the original byte loop (bank 1 still mapped), ends b *r11
+        andi r1, 0xbfff          ; drop the write bit so the next sector isn't taken for the pool
+        mov  @0x3ffa, r11
+        b    *r11
+VM_tog:                          ; real VDP r0 -> GRAM r1 (segment load)
+        swpb r0
+        movb r0, *r8             ; VDP read address, low byte
+        swpb r0
+        movb r0, *r8             ; high byte (read mode)
+        a    r7, r0
+        mov  r1, r5
+        ai   r5, 0x2000
+        movb r5, @0x9c0e         ; GRAM address hi
+        swpb r5
+        movb r5, @0x9c0e         ; lo
+        a    r7, r1
+VM_tg1:
+        movb @0x8800, @0x9c0c
+        dec  r7
+        jgt  VM_tg1
+        b    *r11
+VM_fromg:                        ; GRAM r0 -> real VDP r1
+        mov  r0, r5
+        ai   r5, 0x2000
+        movb r5, @0x9c0e
+        swpb r5
+        movb r5, @0x9c0e
+        a    r7, r0
+        mov  r1, r5
+        ori  r5, 0x4000
+        swpb r5
+        movb r5, *r8             ; VDP write address, low byte
+        swpb r5
+        movb r5, *r8             ; high byte | >40
+        a    r7, r1
+VM_fg1:
+        movb @0x980c, @0x8c00
+        dec  r7
+        jgt  VM_fg1
+        b    *r11
+
+; Trampolines into bank 3 (gram.s, entry table at >6100) for the segment loader's
+; compactor (>5B56) and real-constant write-back (>5DCC), both in bank 0. The bank-3
+; code returns through RET_B0 with r11 intact.
+T_COMPACT:
+        clr  @0x6006             ; bank 3
+        b    @0x6100
+T_CONSTW:
+        clr  @0x6006
+        b    @0x6104
+RET_B0:
+        clr  @0x6000             ; back to bank 0
+        b    *r11
 
 ; ---- HALT reset fix ----------------------------------------------------------
 ; The p-System reset routine (RAM 0x2FFE) ends in `BLWP @0000` (console reset).
@@ -352,6 +459,8 @@ RD2READ:
         jlt  COPYGRAM             ; bit 15 -> GRAM
 
 ; ---- copy to VRAM: src R6, page R3, dest R1, count R2
+        ci   r1, 0x4000           ; fake VDP address in the GRAM code pool?
+        jhe  COPYPOOL
         ori  r1, 0x4000
         swpb r1
         movb r1, @0x8c02
@@ -367,6 +476,23 @@ VDPIN:
         jne  VDPIN
         li   r6, 0x6000
         jmp  VDPOUT
+
+; ---- copy to the GRAM code pool: G = R1 + >2000 on base 3, address set once
+COPYPOOL:
+        ai   r1, 0x2000
+        movb r1, @0x9c0e
+        swpb r1
+        movb r1, @0x9c0e
+POOLOUT:
+        clr  *r3+                 ; select page, advance to next
+POOLIN:
+        movb *r6+, @0x9c0c
+        dec  r2
+        jeq  cpdone
+        ci   r6, 0x8000
+        jne  POOLIN
+        li   r6, 0x6000
+        jmp  POOLOUT
 
 ; ---- copy to CPU RAM
 COPYRAM:

@@ -38,6 +38,12 @@ python3 -c "open('bank1.bin','wb').write(open('bank1.full','rb').read()[:0x2000]
 $AS ramhelp.s -o ramhelp.o
 $LD -Ttext=0x3A00 ramhelp.o -o ramhelp.elf 2>/dev/null
 $OC -O binary ramhelp.elf ramhelp.bin
+# 2b. GRAM code pool routines for cart bank 3 (uses RAM helper symbols)
+# (an undefined symbol silently assembles as 0 with this toolchain, so pass RET_B0 in)
+RET_B0=0x$($BIN/tms9900-nm ramhelp.elf | awk '$3=="RET_B0"{print $1}')
+$AS --defsym RET_B0=$RET_B0 gram.s -o gram.o
+$LD -Ttext=0x6100 gram.o -o gram.elf 2>/dev/null
+$OC -O binary gram.elf gram.bin
 
 # 3. patch DSR banks (startup ports + address-set trampolines to RAM helpers)
 python3 patchdsr.py
@@ -48,4 +54,6 @@ GROMCONSOLE=1 python3 patchgrom.py >/dev/null
 # 5. assemble the cart image + loader
 python3 make_cartB2.py
 python3 add_romdisk.py
-echo "Approach B cart built: cartB2.bin + cartgrom.bin"
+# 6. UberGROM package (the only build target): ../output/ubergrom/PCODE_*.BIN
+python3 make_ubergrom.py
+echo "cart built: romcart.bin + cartgrom_b.bin -> ../output/ubergrom"
