@@ -111,9 +111,13 @@ Pointless in the end. We can only have 40k max without hacking in more paging. C
 
 ---------------
 
-Overdrive autorepeat can be fixed with C2DA4=10  -- this is a shift table and the byte is normally 02, but nothing appears to use this entry except autorepeat. Good enough for basic work.
+Autorepeat delay set here - Classic99 now knows it for overdrive
 
-Set code at >5578 appears it could use it - so breakpoint there if you change it so you know if you break something.
+41CE 1304 JEQ KEYDOWN ; Same as last time?
+41D0 C820 MOV @SBITMSK+18,@AUTORPT ; Contains 200H
+41D2 2DA4 -  <<<< change this to something we can more freely tweak - 0x0200 by default, 0x1000 better in overdrive
+41D4 2CD0 ,
+41D6 1006 JMP NORPT
 
 ---------------
 
@@ -288,7 +292,7 @@ With: 30! This probably has more to do with the flash disk
 
 The concept of a 'flash drive' using the rest of the GROM space - I passed on this because of lack of free space for the driver, but if we added another page (or 2) of ROM dedicated to our expansions, then all we need to place in RAM are stubs to handle the paging. There's enough RAM left for that. Since the flash device doesn't need to page ROM, it's okay to have that code running there.
 
-Didn't think of this before, since the UberGROM wasn't the original target, but the UberGROM exposes 12k of GRAM. If that's big enough to replace the VDP memory, then we could do that without AMS.
+Didn't think of this before, since the UberGROM wasn't the original target, but the UberGROM exposes 15k of GRAM. If that's big enough to replace the VDP memory (which is 12k), then we could do that without AMS.
 
 80 columns would be possible if we freed up VRAM. One way to do this might be to move VRAM to a SAMS driver instead. Using AMS you could conceivably create much larger programs (depending on how expandable the memory management is). But even just moving the VDP RAM there would free up the memory that Editor currently requires, allowing the larger buffer.
 

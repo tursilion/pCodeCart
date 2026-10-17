@@ -12,7 +12,7 @@ S="./ti99sim --cart $U/PCODE_ROM_8.BIN --ubergrom $U/PCODE_AVR_FLASH.BIN $U/PCOD
 B="$S --disk BLANK.DSK"
 scr(){ grep -E "CATCH|HALT|APP STARTED|^ *[0-9]+\|" | grep -vE '^ *[0-9]+\| *$'; }
 keys(){ K="$1"; t=$2; shift 2; for c in "$@"; do K="$K,$t:$c"; t=$((t+300)); done; echo "$K"; }
-typ(){ echo "$1" | sed 's/ /_/g; s/./& /g'; }
+typ(){ echo "$1" | sed 's/ /_/g; s/./& /g; s/,/x2C/g'; }   # ',' separates keysched entries
 
 echo "=== no disk"
 echo "--- boot";        $S --keysched "50:_,100:2" --max 30000000 2>&1 | scr
@@ -22,6 +22,8 @@ echo "--- E,Enter,Q";   $S --keysched "50:_,100:2,5000:E,9000:~,13000:Q" --max 6
 echo "--- E,Enter,Q,E"; $S --keysched "50:_,100:2,5000:E,9000:~,13000:Q,17000:E" --max 70000000 2>&1 | scr | head -3
 echo "--- E delete+left arrow (old crash), ESC, Q, E"
 $S --keysched "50:_,100:2,5000:E,9000:~,13000:D,17000:x88,21000:x03,25000:Q,29000:E" --max 120000000 2>&1 | scr | head -5
+echo "--- F G Ctrl-C G A B (READLN EOF fix; hung before)"
+$S --keysched "50:_,100:2,3000:F,6000:G,9000:x03,12000:G,15000:A,15300:B" --max 80000000 2>&1 | scr | head -2
 for k in A L; do echo "--- $k"; $S --keysched "50:_,100:2,5000:$k" --max 60000000 2>&1 | scr | head -4; done
 echo "--- charset (pattern table >0000-07FF; the screen dump above can't see font loss)"
 $S --keysched "50:_,100:2" --snap 478 --snapkscan 400 --max 30000000 >/dev/null 2>&1
@@ -29,6 +31,12 @@ python3 -c "
 v=open('snap_vram.bin','rb').read()
 print(' A=%s 0=%s nonzero=%d/2048'%(v[0x208:0x210].hex(),v[0x180:0x188].hex(),sum(1 for b in v[:0x800] if b)))"
 rm -f snap_vram.bin snap_ram.bin snap_hram.bin
+
+echo "=== 80 column boot (menu 3; --vdp80 = F18A/V9938-style registers)"
+echo "--- menu";        $S --keysched "50:_" --screenkscan 90 --max 30000000 2>&1 | scr | sed -n 5,7p
+echo "--- F V (80)";    $S --vdp80 --keysched "50:_,100:3,300:F,700:V" --max 60000000 2>&1 | grep -E "nametable" ; $S --vdp80 --keysched "50:_,100:3,300:F,700:V" --max 60000000 2>&1 | scr
+K=$(keys "50:_,100:3,5000:E,9000:~,13000:I" 15000 $(typ "PROGRAM WIDE;BEGIN WRITELN('OVER FORTY COLUMNS, ENDS AT COL 70') END.{"))
+echo "--- E, type a 70 column line (80)"; $S --vdp80 --keysched "$K" --max 150000000 2>&1 | scr
 
 echo "=== blank disk #4:BLANK"
 echo "--- F V";         $B --keysched "50:_,100:2,300:F,700:V" --max 60000000 2>&1 | scr

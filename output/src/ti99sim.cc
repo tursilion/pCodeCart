@@ -43,7 +43,8 @@ static int      cartBankMask=0;
 
 // ---------------------------------------------------------------- VDP
 static uint8_t  vram[0x4000];
-static uint8_t  vdpRegs[8];
+static uint8_t  vdpRegs[64];
+static bool     g_vdp80=false;      // --vdp80: F18A/V9938-style VDP: registers 8+ are real (not R0-R7), R0 bit 2 = 80 column text
 static uint16_t vdpAddr=0;
 static uint8_t  vdpPrefetch=0;
 static uint8_t  vdpStatus=0;
@@ -168,6 +169,7 @@ static bool     g_pooltrap=false;        // --vdppooltrap: report VDP data acces
 static long     g_pooltrapN=0;
 static void poolTrap(const char*rw,uint16_t va){
     if(!g_pooltrap || !reachedEntry || va<0x0DF8 || va>0x3E3B) return;
+    if(va>=0x1000 && va<0x1780) return;   // screen image table (moved from >0800, 80x24 max)
     if(g_pooltrapN++<20){ uint16_t np=(g_pc>=0x6000&&g_pc<0x8000)?g_pc-0x2000:g_pc; fprintf(stderr,"[VDPPOOL %s %04X pc=%04X(n%04X) insn=%ld]\n",rw,va,g_pc,np,insnCount); }
 }
 // boothack.c minirom: the power-up hook served at base 0 >E000 until >E00D is read
@@ -319,7 +321,7 @@ public:
         if (x&2){ // address/register port
             if (!vdpLatched){ vdpFirst=c; vdpLatched=1; }
             else { vdpLatched=0; int hi=c;
-                if ((hi&0xC0)==0x80){ int _r=hi&7; uint8_t _ov=vdpRegs[_r]; vdpRegs[_r]=vdpFirst;
+                if ((hi&0xC0)==0x80){ int _r=g_vdp80?(hi&0x3f):(hi&7); uint8_t _ov=vdpRegs[_r]; vdpRegs[_r]=vdpFirst;
                     if(_r==1 && reachedEntry && _ov!=vdpFirst){ uint16_t np=(g_pc>=0x6000&&g_pc<0x8000)?g_pc-0x2000:g_pc; fprintf(stderr,"[VDP reg1 %02X->%02X pc=%04X insn=%ld kscan=%ld]%s\n",_ov,vdpFirst,np,insnCount,g_kscanHits,vdpFirst==0xE1?"  <<< APP STARTED":""); } }
                 else { vdpAddr=(((hi&0x3f)<<8)|vdpFirst)&0x3fff;
                        // VDP-address-li detection: the value written here came from a register;
@@ -440,9 +442,9 @@ static void dumpNameTable(TI99&cpu){
     for(int i=0;i<8;i++) fprintf(stderr," %02X",vdpRegs[i]);
     fprintf(stderr," (mode reg0=%02X reg1=%02X)\n",vdpRegs[0],vdpRegs[1]);
     // print 24 rows of 32 (or 40 if text mode)
-    int cols=(vdpRegs[1]&0x10)?40:32;
+    int cols=(vdpRegs[1]&0x10)?((g_vdp80&&(vdpRegs[0]&0x04))?80:40):32;
     for(int r=0;r<24;r++){
-        char line[64]; int p=0;
+        char line[96]; int p=0;
         for(int c=0;c<cols;c++){ int v=vram[(nt+r*cols+c)&0x3fff];
             // best-effort: TI title uses pattern index; printable if 0x20-0x7E after +0x00 or -0x60
             int ch=v; if(ch<0x20||ch>0x7e){ int alt=v+0x60; if(alt>=0x20&&alt<=0x7e) ch=alt; else ch='.'; }
@@ -513,6 +515,7 @@ int main(int argc,char**argv){
         else if(a=="--cr15") g_cr15=true;
         else if(a=="--basewarn") g_basewarn=true;
         else if(a=="--nodisk") noDisk=true;
+        else if(a=="--vdp80") g_vdp80=true;
         else if(a=="--disk"&&i+1<argc) diskFile[1]=argv[++i];
         else if(a=="--romdisk"&&i+1<argc){ FILE*rf=fopen(argv[++i],"rb"); if(rf){ fseek(rf,0,SEEK_END); long n=ftell(rf); fseek(rf,0,SEEK_SET); romdisk.resize(n); fread(romdisk.data(),1,n,rf); fclose(rf); fprintf(stderr,"romdisk: %ld bytes (%ld sectors) at base>=%d\n",n,n/512,ROMDISK_BASE); } }
         else if(a=="--disk2"&&i+1<argc) diskFile[2]=argv[++i];

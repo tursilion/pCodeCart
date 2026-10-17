@@ -3,8 +3,9 @@
 ; They reproduce the two DSR GROM address-set routines (orig L4144 / L4178) but
 ; translate the p-code GROM address into console GROM space and select the GROM
 ; base register r13:
-;   bank0 (pcode hi < 0xA0): console = pcode + 0x6000, r13 = >9800  (write-addr 9C02)
-;   bank1 (pcode hi >= 0xA0): console = pcode - 0x4000, r13 = >9804  (write-addr 9C06)
+;   pcode < >8000:  console base 0 = pcode + >8000 (>8000-FFFF), r13 = >9800 (write-addr 9C02)
+;   pcode >= >8000: console base 2 = pcode - >2000 (>6000-D7FF), r13 = >9808 (write-addr 9C0A)
+;   Base 0/1 >6000 is the cart's boot header GROM, never addressed by the p-System.
 ; The high byte is written first (GROM sets MSB first), so only it is adjusted.
 ; Runs in the caller's WS (entered by a plain `b` trampoline from the DSR ROM, so
 ; r11 = the original caller's return). Saves r0/r11 to RAM temps; leaves r13 set
@@ -21,7 +22,7 @@
 ; ---------------------------------------------------------------------------
         .text
         .global RAM_A, RAM_B, RAM_C, XLAT, RAM_59B4, RAM_584A, HELP584A, HELP584B, HELP4F70A, HELP4F70B, RAM_50B2, RAM_50C0, HALTRESET
-        .global RAM_VMOV, T_COMPACT, T_CONSTW, RET_B0, GRAMTOP
+        .global RAM_VMOV, T_COMPACT, T_CONSTW, RET_B0, GRAMTOP, BOOTW
 
 ; ---- GRAM code pool (UberGROM base 3) ----
 ; The p-System still thinks the code pool is VDP (code type r15<0) but its "VDP"
@@ -31,17 +32,20 @@
 ; @>0402(r13) = >9C0E is the base 3 write-address port (GROM order: high byte first).
 GRAMTOP:
         data 0x7bfe              ; TOPMEM value, stored by the patched startup (RAM >221E)
+BOOTW:
+        data 40                  ; console WIDTH loaded by RESCON (patched `li r1,40` -> `mov @BOOTW,r1`);
+                                 ; the 80 column boot entry (bank 2 LOAD80) sets it to 80
 
 ; ---- shared: r0 MSB = pcode high byte -> translated high byte in r0 MSB, r13 = base ----
 XLAT:
         andi r0, 0xff00          ; isolate the high byte (clear LSB garbage from movb)
-        ci   r0, 0xa000
+        ci   r0, 0x8000
         jhe  XLAT_B1
-        ai   r0, 0x6000          ; bank0: high += 0x60
+        ai   r0, 0x8000          ; base 0: high += 0x80
         li   r13, 0x9800
         b    *r11
 XLAT_B1:
-        ai   r0, 0xc000          ; bank1: high -= 0x40  (0xC000 = -0x4000)
+        ai   r0, 0xe000          ; base 2: high -= 0x20  (0xE000 = -0x2000)
         li   r13, 0x9808         ; base2 (base1 is a duplicate of base0; base2 = the other GROM)
         b    *r11
 
@@ -169,17 +173,17 @@ RAM_C:
 
 ; ==== r5-based d5 GROM routines (console-space conversion) ====
 ; XLATW: input r6 = pcode GROM addr. Output r0 = translated console addr (hi byte
-; +0x60 bank0 / -0x40 bank1), r5 = console WRITE-ADDR base (9C02 base0 / 9C0A base2).
+; +0x80 base 0 / -0x20 base 2), r5 = console WRITE-ADDR base (9C02 base0 / 9C0A base2).
 ; r6 is preserved (routines like L584A do pcode arithmetic on it). Uses R11 (bl).
 XLATW:
         mov  r6, r0
-        ci   r0, 0xa000
+        ci   r0, 0x8000
         jhe  XW_B1
-        ai   r0, 0x6000
+        ai   r0, 0x8000
         li   r5, 0x9c02
         b    *r11
 XW_B1:
-        ai   r0, 0xc000
+        ai   r0, 0xe000
         li   r5, 0x9c0a
         b    *r11
 
@@ -229,13 +233,13 @@ R4_skip:
 ; r5, then hardcoded-branch back to the instruction after the 8-byte block.
 HELP584A:
         mov  r6, r0
-        ci   r0, 0xa000
+        ci   r0, 0x8000
         jhe  H4A_b1
-        ai   r0, 0x6000
+        ai   r0, 0x8000
         li   r5, 0x9c02
         jmp  H4A_w
 H4A_b1:
-        ai   r0, 0xc000
+        ai   r0, 0xe000
         li   r5, 0x9c0a
 H4A_w:
         movb r0, *r5
@@ -244,13 +248,13 @@ H4A_w:
         b    @0x7852             ; return -> L5852 (the block read)
 HELP584B:
         mov  r6, r0
-        ci   r0, 0xa000
+        ci   r0, 0x8000
         jhe  H4B_b1
-        ai   r0, 0x6000
+        ai   r0, 0x8000
         li   r5, 0x9c02
         jmp  H4B_w
 H4B_b1:
-        ai   r0, 0xc000
+        ai   r0, 0xe000
         li   r5, 0x9c0a
 H4B_w:
         movb r0, *r5
@@ -265,13 +269,13 @@ HELP4F70A:                       ; path A: hi=r4, lo=@8389 (r0 preserved: L4FA8 
         mov  r0, @0x3ff4
         mov  r4, r0
         andi r0, 0xff00
-        ci   r0, 0xa000
+        ci   r0, 0x8000
         jhe  H70A_b1
-        ai   r4, 0x6000
+        ai   r4, 0x8000
         li   r1, 0x9800
         jmp  H70A_w
 H70A_b1:
-        ai   r4, 0xc000
+        ai   r4, 0xe000
         li   r1, 0x9808
 H70A_w:
         movb r4, @0x0402(r1)
@@ -282,13 +286,13 @@ HELP4F70B:                       ; path B: hi=@8389, lo=r4 (r0 preserved)
         mov  r0, @0x3ff4
         movb @0x8389, r0
         andi r0, 0xff00
-        ci   r0, 0xa000
+        ci   r0, 0x8000
         jhe  H70B_b1
-        ai   r0, 0x6000
+        ai   r0, 0x8000
         li   r1, 0x9800
         jmp  H70B_w
 H70B_b1:
-        ai   r0, 0xc000
+        ai   r0, 0xe000
         li   r1, 0x9808
 H70B_w:
         movb r0, @0x0402(r1)
@@ -301,13 +305,13 @@ RAM_50B2:
         mov  r0, @0x3ff4
         mov  r4, r0
         andi r0, 0xff00
-        ci   r0, 0xa000
+        ci   r0, 0x8000
         jhe  R50_b1
-        ai   r4, 0x6000
+        ai   r4, 0x8000
         li   r1, 0x9800
         jmp  R50_w
 R50_b1:
-        ai   r4, 0xc000
+        ai   r4, 0xe000
         li   r1, 0x9808
 R50_w:
         movb r4, @0x0402(r1)

@@ -37,7 +37,7 @@ def patch(fn):
     assert b[0x166]==0xC3 and b[0x167]==0xCF, "L4166 entry mismatch"
     assert b[0x178]==0xC3 and b[0x179]==0xCF, "L4178 entry mismatch"
     setw(b,0x04A,0x9C0A)          # li r4 -> bank1 (base2) write-addr port 9C0A
-    setw(b,0x056,0xA804)          # li r2 -> translated boot address
+    setw(b,0x056,0xC804)          # li r2 -> translated boot address (pcode E804 = base 2 >C804)
     setw(b,0x144,0x0460); setw(b,0x146,RAM_A)   # b @RAM_A
     setw(b,0x166,0x0460); setw(b,0x168,RAM_C)   # b @RAM_C
     setw(b,0x178,0x0460); setw(b,0x17A,RAM_B)   # b @RAM_B
@@ -256,3 +256,24 @@ chk(b,0x192C,(0x0261,0x4000),"VDPMOV @592C")
 setw(b,0x192C,0x0460); setw(b,0x192E,RAM_VMOV)         # b @RAM_VMOV (sector copy, pool-aware)
 open('bank1.bin','wb').write(b)
 print("GRAM pool: bank0 5C3C r13=980C, 50C0->RAM_50C0, 5B56->T_COMPACT, 5DCC->T_CONSTW; bank1 592C->RAM_VMOV")
+
+# Screen: the VDP screen image table moves from >0800 to >1000 (freed by the GRAM code
+# pool), and the console width comes from the RAM word BOOTW (40, or 80 when booted
+# through the 80 column entry, see make_cartB2.py LOAD80). VDP R2 = >04 is set by the
+# VDPCOP2 table (patchgrom.py). RESCON runs at startup AND again from the OS's console
+# UNITCLEAR, so the width can't just be set once at boot.
+BOOTW=sym('BOOTW')
+for fn in ('bank0.bin','bank1.bin'):                   # CURWIN is in the shared region
+    b=bytearray(open(fn,'rb').read())
+    chk(b,0x07EA,(0x0209,0x0800),"CURWIN li r9,>0800 @47EA (%s)"%fn)
+    setw(b,0x07EC,0x1000)
+    open(fn,'wb').write(b)
+b=bytearray(open('bank1.bin','rb').read())
+chk(b,0x12E8,(0x0201,0x0028,0xC801,0x2CC6),"RESCON li r1,40 @52E8")
+setw(b,0x12E8,0xC060); setw(b,0x12EA,BOOTW)            # mov @BOOTW,r1 (then mov r1,@WIDTH)
+chk(b,0x146E,(0x0225,0x0800),"SCRECHO ai r5,VSCREEN @546E")
+setw(b,0x1470,0x1000)
+chk(b,0x1BCC,(0x0204,0x0800),"PRSKEYX li r4,>0800 @5BCC")
+setw(b,0x1BCE,0x1000)
+open('bank1.bin','wb').write(b)
+print("Screen: VSCREEN >1000 (CURWIN, SCRECHO, PRSKEYX); RESCON width = @BOOTW (%04X)"%BOOTW)

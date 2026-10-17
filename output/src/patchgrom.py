@@ -228,6 +228,34 @@ if os.environ.get('GROMCONSOLE')=='1':
     setw(0xEA22,0xC820); setw(0xEA24,ramsym('GRAMTOP')); setw(0xEA26,0x2782)   # RAM 221E: mov @GRAMTOP,@TOPMEM
     print("GRAM pool: CODREAD[2]=980C, INTMEM=4000, TOPMEM=@GRAMTOP (7BFE)")
 
+# READLN tail fix (OS I/O segment, READLN = proc at GROM >667A; console base 0 >C67A).
+# Pressing the EOF key (Ctrl-C) at a console prompt sets FEOLN and FEOF on INPUT.
+# READLN clears FEOLN but never FEOF, so the next console read hangs: GET returns
+# nothing at EOF and the read loop waits forever for EOLN (same bug on the real card).
+# FIB words: 1 FEOLN, 2 FEOF, 3 FSTATE. Only interactive files reach READLN with
+# FSTATE <> 0 (CONSOLE: is 2; disk TEXT files are 0, checked in the sim), so that
+# branch now also clears FEOF. Rewritten in place, same 31 bytes (>668B-66A9):
+#   if FSTATE <> 0 then begin FSTATE := 1; FEOLN := false; FEOF := false end
+#   else if not FEOF then GET(f)
+if os.environ.get('GROMCONSOLE')=='1':
+    old=bytes.fromhex('207b00d2038b0d00' '20e70301c4' '20e70100c4' '8b0a00' '207ad4038b0300209102')
+    new=bytes.fromhex('207b00b1d411'     # SLDL1 SIND3 SLDC0 NEQI FJP ->66A2
+                      '20e70301c4'       # FSTATE := 1
+                      '20e70100c4'       # FEOLN := false
+                      '20e70200c4'       # FEOF := false (new)
+                      '8a08'             # UJP ->66AA (SIGNAL, return)
+                      '207ae5d403209102')# 66A2: SLDL1 SIND2 LNOT FJP ->66AA; SLDL1 CGP 2
+    assert len(old)==len(new)==31 and bytes(g[0x668B:0x668B+31])==old, "READLN tail @GROM 668B"
+    g[0x668B:0x668B+31]=new
+    print("READLN fix: interactive READLN also clears FEOF (GROM 668B)")
+
+# VDPCOP2 (RAM >2CB0, default VDP R1-R7 loaded by RESCON; kernel data chunk GROM = RAM + >C27C):
+# R2 >02 -> >04, screen image table >0800 -> >1000 (see patchdsr.py VSCREEN).
+if os.environ.get('GROMCONSOLE')=='1':
+    assert w(0xEF2E)==0x8202, "VDPCOP2+2 @GROM EF2E = %04X"%w(0xEF2E)
+    setw(0xEF2E,0x8204)
+    print("VDPCOP2: R2 = >04 (screen image table >1000)")
+
 outname = 'cartgrom_b.bin' if os.environ.get('GROMCONSOLE')=='1' else 'cartgrom.bin'
 open(outname,'wb').write(g)
 print("wrote %s (%d bytes)"%(outname,len(g)))
