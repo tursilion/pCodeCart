@@ -216,6 +216,12 @@ if os.environ.get('GROMCONSOLE')=='1':
     else:
         print("WARN: UNITPNT[#12] @GROM 0xEEB4 not as expected (=%04X), ROM disk not installed"%w(0xEEB4))
 
+# FLASH: disk (UberGROM flash pages 9-14) as unit #11: UNITPNT[#11] = RAM 0x2C36 (GROM 0xEEB2).
+if os.environ.get('GROMCONSOLE')=='1':
+    assert w(0xEEB2)==0x0000, "UNITPNT[#11] @GROM EEB2 = %04X"%w(0xEEB2)
+    setw(0xEEB2, ramsym('FLASHDSK'))
+    print("FLASH disk: UNITPNT[#11] (RAM 2C36 / GROM EEB2) -> FLASHDSK (0x%04X)"%ramsym('FLASHDSK'))
+
 # GRAM code pool (UberGROM base 3, see ramhelp.s): the pool keeps fake VDP addresses
 # >4000-7BFE (GRAM = V + >2000), and pool code reads through r13 = >980C.
 # Startup code chunk: GROM = RAM + 0xC804. Kernel data chunk: GROM = RAM + 0xC27C.

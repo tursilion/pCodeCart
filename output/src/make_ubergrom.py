@@ -57,6 +57,17 @@ else:                                  # example folder gone: reuse the program 
     prog=open(OUT+'/PCODE_AVR_FLASH.BIN','rb').read()[0x1E000:]
     print("note: %s/UberGROM_Program.bin not found, reusing the last 8K of %s/PCODE_AVR_FLASH.BIN"%(EX,OUT))
 assert len(prog)==0x2000
+# FLASH: disk (unit #11, ramhelp FLASHDSK + gram.s FL_READ/FL_WRITE): GROM pages 9-14 hold
+# a 96-block p-System volume, shipped empty. Blocks 0-1 zero, directory (blocks 2-5) from the
+# blank volume with name FLASH and end-of-volume 96, the rest erased (>FF).
+FLPAGES=6
+vol=bytearray(b'\xff'*(FLPAGES*PAGE)); vol[:1024]=bytes(1024)
+d=bytearray(open('BLANK.DSK','rb').read()[1024:3072])
+assert d[6]==5 and d[7:12]==b'BLANK' and d[16:18]==b'\0\0', "BLANK.DSK directory"
+d[6:14]=bytes([5])+b'FLASH  '; d[14:16]=(FLPAGES*PAGE//512).to_bytes(2,'big')
+vol[1024:3072]=d
+grom=grom+bytes(vol)
+assert len(grom)==15*PAGE
 avr=grom+b'\xff'*(120*1024-len(grom))+prog
 assert len(avr)==128*1024
 open(OUT+'/PCODE_AVR_FLASH.BIN','wb').write(avr)
@@ -77,5 +88,7 @@ for i,addr in enumerate((0x6000,0x8000,0xA000,0xC000)):
 mapslot(3,0x6000,0x00)                 # GRAM: RAM page 0 (8K) on base 3 >6000-7FFF
 mapslot(3,0x8000,0x01)                 # GRAM: RAM page 1 (7K) on base 3 >8000-9BFF (>9C00-9FFF reads undriven)
 mapslot(15,0xE000,0x60)                # flash controller on base 15 >E000 (as example)
+for i,base in enumerate((4,5,6,7,8,10)):  # FLASH: disk: page 9+i alone at >8000 of its own base
+    mapslot(base,0x8000,0x19+i)        # (not >6000: no cartridge-header scan; not base 9: GRAM buffers)
 open(OUT+'/PCODE_AVR_EEPROM.BIN','wb').write(ee)
 print("wrote %s: PCODE_ROM_8.BIN (%d), PCODE_AVR_FLASH.BIN (%d), PCODE_AVR_EEPROM.BIN (%d)"%(OUT,0x80000,len(avr),len(ee)))

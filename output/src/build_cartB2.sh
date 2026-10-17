@@ -41,7 +41,8 @@ $OC -O binary ramhelp.elf ramhelp.bin
 # 2b. GRAM code pool routines for cart bank 3 (uses RAM helper symbols)
 # (an undefined symbol silently assembles as 0 with this toolchain, so pass RET_B0 in)
 RET_B0=0x$($BIN/tms9900-nm ramhelp.elf | awk '$3=="RET_B0"{print $1}')
-$AS --defsym RET_B0=$RET_B0 gram.s -o gram.o
+RET_B1R=0x$($BIN/tms9900-nm ramhelp.elf | awk '$3=="RET_B1R"{print $1}')
+$AS --defsym RET_B0=$RET_B0 --defsym RET_B1R=$RET_B1R gram.s -o gram.o
 $LD -Ttext=0x6100 gram.o -o gram.elf 2>/dev/null
 $OC -O binary gram.elf gram.bin
 

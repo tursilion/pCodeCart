@@ -15,14 +15,16 @@
 ; Reserved low-memory map (0x3A00-0x3FFF):
 ;   0x3A00-0x3DFF  RAM helpers (this file, up to .org 0x400), incl. the GRAM code pool helpers
 ;   0x3E00-0x3EC1  ROM disk driver for unit #12 (ROMDISK2 table + RD2READ)
-;   0x3EC2-0x3FF3  free
+;   0x3EC2-0x3EEF  free
+;   0x3EF0-0x3FEF  FLBUF: 256-byte staging buffer of the FLASH: driver (cart bank 3, gram.s)
+;   0x3FF0-0x3FF3  free
 ;   0x3FF4-0x3FF9  RAM temps (above)
 ;   0x3FFA-0x3FFB  r11 save for RAM_VMOV
 ;   0x3FFC-0x3FFF  free (4 bytes)
 ; ---------------------------------------------------------------------------
         .text
         .global RAM_A, RAM_B, RAM_C, XLAT, RAM_59B4, RAM_584A, HELP584A, HELP584B, HELP4F70A, HELP4F70B, RAM_50B2, RAM_50C0, HALTRESET
-        .global RAM_VMOV, T_COMPACT, T_CONSTW, RET_B0, GRAMTOP, BOOTW, VTOPFIX
+        .global RAM_VMOV, T_COMPACT, T_CONSTW, RET_B0, GRAMTOP, BOOTW, VTOPFIX, FLASHDSK, RET_B1R
 
 ; ---- GRAM code pool (UberGROM base 3) ----
 ; The p-System still thinks the code pool is VDP (code type r15<0) but its "VDP"
@@ -460,6 +462,33 @@ VTOPFIX:
         mov  r1, @0x8370         ; VDPTOP = DSKBUF-5
 vtok:
         b    *r11
+
+; ---- FLASH: disk, unit #11 (UberGROM flash pages 9-14, 192 sectors) -----------
+; patchgrom points UNITPNT[#11] at FLASHDSK. The BIOS enters read/write with B *R2 from
+; FNDBIOS: WP = INTWS, R10 = IOCTRL, bank 1 active. As RD2READ does, run DISKPAR (bank 1)
+; here in RAM, then switch to bank 3 where the driver lives (gram.s entries >6108/>610C).
+; The driver returns through RET_B1R, which must be in RAM: it re-selects bank 1 and RTWPs.
+FLASHDSK:
+        data FLRD                ; read
+        data FLWR                ; write
+        data 0                   ; no init
+        data 0                   ; no status
+FLRD:
+        sb   @0x29c3, @0x29c3     ; zero SERBUF+11 (unit #11's previous-error byte)
+        seto @0x834c              ; read flag (as DSKREAD)
+        clr  @0x2ce2              ; GRMADDR
+        bl   @0x76f4              ; DISKPAR (orig >56F4, relocated +0x2000 in the cart)
+        clr  @0x6006              ; bank 3
+        b    @0x6108              ; FL_READ
+FLWR:
+        sb   @0x29c3, @0x29c3
+        sb   @0x834d, @0x834d     ; write flag (as DSKWRIT: clr FAC+3)
+        bl   @0x76f4              ; DISKPAR
+        clr  @0x6006
+        b    @0x610c              ; FL_WRITE
+RET_B1R:
+        clr  @0x6002              ; back to bank 1 (the BIOS page)
+        rtwp
 
 ; =============================================================================
 ; ROM-based disk device, installed as unit #12 (replaces physical DSK6).

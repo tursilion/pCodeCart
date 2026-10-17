@@ -33,6 +33,7 @@ static bool     diskOn=false;        // CRU >1100 bit0
 static bool     noDisk=false;        // --nodisk: no disk controller at all
 static uint8_t  tipiRom[0x2000];     // --tipi FILE CRU: extra DSR card ROM (first 8K), no hardware behind it
 static int      tipiCru=-1; static bool tipiOn=false;
+static int      g_regsat=-1; static long g_regsatN=0;  // --regsat HEX: print the workspace registers whenever PC = HEX (first 40 hits)
 static FILE*    g_tipilog=0;         // --trace-tipi F: PCs executed while the --tipi card is on
 #include <vector>
 #include <string>
@@ -157,7 +158,10 @@ static std::map<long,char> keySched;  // --keysched "kscan:char,...": inject cha
 // own the counter); with the rollover flag clear it wraps within 8K like them. It answers
 // only for GROM addr >=6000, at the address of the byte actually read/written (cgPreAddr). Map byte for (base,slot) is
 // EEPROM[2+base*16+slot] (bases flag on) with its inverse at +8. Device = byte>>4:
-// 0 RAM (15K: page0 8K, page1 7K), 1 GROM (flash pages 0-14), 2 EEPROM; 3-7 not modelled.
+// 0 RAM (15K: page0 8K, page1 7K), 1 GROM (flash pages 0-14), 2 EEPROM, 6 flash controller; 3-5,7 not modelled.
+// Flash controller (offsets in its slot): 0000-00FF write buffer (sequential), 0100 page (0-31),
+// 0101/0102 command + inverse (31/CE erase the 256-byte page, D2/2D program it), 0103 result
+// (0 idle, 2 write protected, 3 command error), 0104 GROM slot (0-14). Erase/program are instant.
 // EEPROM and RAM writes stay in memory (never saved). Write-protect pin is assumed off.
 static bool     ugOn=false;
 static uint8_t  ugFlash[0x20000];        // AVR flash image: GROM page n at n*0x2000, AVR program at 0x1E000
@@ -167,6 +171,9 @@ static uint8_t  ugRam[UG_RAMSIZE];
 static uint8_t  ugOverride=0xff;         // boothack recovery state (power-up only)
 static uint8_t  ugLock=1;                // EEPROM unlock sequence state (>55,>AA,>5A to base15 >FFFF)
 static int      ugPage=0;                // HandlerPage of the current access
+static uint8_t  ugFcBuf[256]; static uint8_t ugFcPage=0, ugFcSlot=0, ugFcCmd=0, ugFcRes=0;
+static bool     ugWP=false;             // --ugwp: flash write-protect pin set
+static long     ugFcErase=0, ugFcProg=0, ugFcEraseN[15][32];   // erase count per 256-byte flash page
 static bool     ugRoll=false;            // EEPROM flag >04: UberGROM addresses >=6000 count straight across 8K slots
 static FILE*    g_uglog=nullptr;         // --uglog FILE: log RAM/EEPROM device accesses
 static bool     g_pooltrap=false;        // --vdppooltrap: report VDP data accesses to the vacated old pool >0DF8-3E3B
@@ -179,7 +186,7 @@ static void poolTrap(const char*rw,uint16_t va){
 // boothack.c minirom: the power-up hook served at base 0 >E000 until >E00D is read
 static const uint8_t ugMinirom[]={0xaa,0x01,0x00,0x00,0xe0,0x0c,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,
     0xe0,0x10,0xbe,0x74,0x05,0x03,0xd6,0x75,0x20,0x40,0x1A,0x0A,0xbd,0x90,0x73,0x90,0x72,0x96,0x72,0x00};
-enum { UG_NONE=-1, UG_RAM=0, UG_GROM=1, UG_EEPROM=2, UG_BOOTHACK=100 };
+enum { UG_NONE=-1, UG_RAM=0, UG_GROM=1, UG_EEPROM=2, UG_FLASHC=6, UG_BOOTHACK=100 };
 
 // main.c GetDevicePointer: which device answers the current address on this base
 static int ugDevice(int base,uint16_t ugAddr){
@@ -198,7 +205,7 @@ static int ugDevice(int base,uint16_t ugAddr){
     if(v!=c) return UG_NONE;
     ugPage=v&0xf;
     int t=v>>4;
-    if(t>2){ static bool warned[16]; if(!warned[t]){ warned[t]=true; fprintf(stderr,"[UG] device type %d (base %d >%04X) not modelled\n",t,base,ugAddr); } return UG_NONE; }
+    if(t>2 && t!=6){ static bool warned[16]; if(!warned[t]){ warned[t]=true; fprintf(stderr,"[UG] device type %d (base %d >%04X) not modelled\n",t,base,ugAddr); } return UG_NONE; }
     return t;
 }
 // returns the byte the UberGROM drives on a data read, or -1 if it leaves the bus alone
@@ -207,6 +214,7 @@ static int ugRead(int base,uint16_t ugAddr){
     switch(d){
     case UG_RAM:  { int fa=(ugPage<<13)+off; if(fa<UG_RAMSIZE) r=ugRam[fa]; break; }
     case UG_GROM: if(ugPage<15) r=ugFlash[(ugPage<<13)+off]; break;
+    case UG_FLASHC: r=0; if(off==0x103) r=ugWP?2:ugFcRes; else if(off==0x100) r=ugFcPage; else if(off==0x104) r=ugFcSlot; break;
     case UG_EEPROM: { int p=ugPage, a=off; if(p==0xff){ p=0; a-=0x1800; } if(p==0 && a>=0 && a<0x1000) r=ugEe[a]; break; }
     case UG_BOOTHACK: { uint16_t a=off|(ugPage<<8); r=0;
         if(a>=0xe000){ if(a-0xe000<(int)sizeof(ugMinirom)) r=ugMinirom[a-0xe000]; }
@@ -222,6 +230,20 @@ static void ugWrite(int base,uint16_t ugAddr,uint8_t c){
     int d=ugDevice(base,ugAddr), off=ugAddr&0x1fff;
     if(g_uglog && (d==UG_RAM||d==UG_EEPROM)) fprintf(g_uglog,"W base=%d %04X dev=%d page=%X <- %02X pc=%04X\n",base,ugAddr,d,ugPage,c,g_pc);
     if(d==UG_RAM){ int fa=(ugPage<<13)+off; if(fa<UG_RAMSIZE) ugRam[fa]=c; }
+    else if(d==UG_FLASHC){
+        if(off<0x100) ugFcBuf[off]=c;
+        else if(off==0x100) ugFcPage=c;
+        else if(off==0x101) ugFcCmd=c;
+        else if(off==0x104) ugFcSlot=c;
+        else if(off==0x102){
+            int fa=(ugFcSlot<<13)+((ugFcPage&31)<<8);
+            if(ugWP) ugFcRes=2;
+            else if((uint8_t)~c!=ugFcCmd || ugFcSlot>14 || ugFcPage>31) ugFcRes=3;
+            else if(ugFcCmd==0x31){ memset(ugFlash+fa,0xff,256); ugFcRes=0; ugFcErase++; ugFcEraseN[ugFcSlot][ugFcPage]++; }
+            else if(ugFcCmd==0xD2){ for(int k=0;k<256;k++) ugFlash[fa+k]&=ugFcBuf[k]; ugFcRes=0; ugFcProg++; }  // program only clears bits
+            else ugFcRes=3;
+            if(g_uglog) fprintf(g_uglog,"FLASH cmd %02X slot %d page %d -> result %d pc=%04X\n",ugFcCmd,ugFcSlot,ugFcPage,ugFcRes,g_pc);
+        } }
     else if(d==UG_EEPROM){ int p=ugPage, a=off;
         if(p==0xff){
             if(a==0x1fff){ switch(ugLock){ case 0x01: ugLock=(c==0x55)?c:1; break; case 0x55: ugLock=(c==0xaa)?c:1; break;
@@ -467,7 +489,7 @@ int main(int argc,char**argv){
     long maxInsns=20000000;
     const char*cartFile=nullptr;
     const char*dsrCfile=nullptr,*dsrDfile=nullptr,*gromFile=nullptr;
-    const char*ugFlashFile=nullptr,*ugEeFile=nullptr,*ugDumpFile=nullptr;
+    const char*ugFlashFile=nullptr,*ugEeFile=nullptr,*ugDumpFile=nullptr,*ugFlashOut=nullptr;
     int dumpAt=-1; long snapPc=-1; bool snapped=false; long snapKscan=0; long snapSkip=0; long snapInsn=0; long snapMem=-1;
     for(int i=1;i<argc;i++){
         std::string a=argv[i];
@@ -519,12 +541,15 @@ int main(int argc,char**argv){
         else if(a=="--uglog"&&i+1<argc) g_uglog=fopen(argv[++i],"w");
         else if(a=="--vdppooltrap") g_pooltrap=true;
         else if(a=="--ugdump"&&i+1<argc) ugDumpFile=argv[++i];
+        else if(a=="--ugwp") ugWP=true;
+        else if(a=="--ugflashout"&&i+1<argc) ugFlashOut=argv[++i];
         else if(a=="--gromreadlog"&&i+1<argc) g_readlog=fopen(argv[++i],"w");
         else if(a=="--gromsetlog"&&i+1<argc) g_setlog=fopen(argv[++i],"w");
         else if(a=="--gromdrv") g_gromdrv=true;
         else if(a=="--cr15") g_cr15=true;
         else if(a=="--basewarn") g_basewarn=true;
         else if(a=="--nodisk") noDisk=true;
+        else if(a=="--regsat"&&i+1<argc) g_regsat=strtol(argv[++i],0,16);
         else if(a=="--trace-tipi"&&i+1<argc) g_tipilog=fopen(argv[++i],"w");
         else if(a=="--tipi"&&i+2<argc){ FILE*f=fopen(argv[++i],"rb"); if(!f){fprintf(stderr,"cannot open %s\n",argv[i]); return 1;} fread(tipiRom,1,0x2000,f); fclose(f); tipiCru=strtol(argv[++i],0,16)&0xFF00; }
         else if(a=="--vdp80") g_vdp80=true;
@@ -647,6 +672,7 @@ int main(int argc,char**argv){
                 fprintf(exectrace,"%04X:%04X\n",np,cpu.peekW(g_pc)); lastexecpc=g_pc;
             }
         }
+        if(g_pc==g_regsat && g_regsatN++<40){ uint16_t wp=cpu.getWP(); fprintf(stderr,"[REGS pc=%04X wp=%04X",g_pc,wp); for(int k=0;k<16;k++) fprintf(stderr," %04X",cpu.peekW(wp+2*k)); fprintf(stderr,"]\n"); }
         if(g_tipilog && tipiOn && g_pc>=0x4000 && g_pc<0x6000) fprintf(g_tipilog,"%04X\n",g_pc);
         if((catch4000||g_catchexec) && !diskOn && !tipiOn && g_pc>=0x4000 && g_pc<0x6000){ fprintf(stderr,"\n*** CATCH: EXEC at >%04X ***\n  recent PCs:",g_pc); for(int k=1;k<=24;k++){ fprintf(stderr," %04X",pcring[(pcringi-k)&63]); } fprintf(stderr,"\n"); break; }
         if(!enteredDsr && g_pc>=0x4000 && g_pc<0x6000){ enteredDsr=true; fprintf(stderr,">>> executing p-code DSR ROM at insn %ld pc=%04X (bank=%d)\n",insnCount,g_pc,pcodeBank); }
@@ -699,6 +725,10 @@ int main(int argc,char**argv){
     fprintf(stderr,"GROM chips accessed (bitmask, bit N=chip N): %02X\n",g_chipmask);
     if(ugOn) fprintf(stderr,"ubergrom: override=%02X lock=%02X\n",ugOverride,ugLock);
     if(g_pooltrap) fprintf(stderr,"vdppooltrap: %ld VDP data accesses to >0DF8-3E3B after entry\n",g_pooltrapN);
+    if(ugOn && (ugFcErase||ugFcProg)){ fprintf(stderr,"ubergrom: flash controller %ld erases, %ld programs; erases per page (slot.page):",ugFcErase,ugFcProg);
+        for(int a=0;a<15;a++) for(int b=0;b<32;b++) if(ugFcEraseN[a][b]) fprintf(stderr," %d.%d=%ld",a,b,ugFcEraseN[a][b]);
+        fprintf(stderr,"\n"); }
+    if(ugOn && ugFlashOut){ FILE*uf=fopen(ugFlashOut,"wb"); fwrite(ugFlash,1,sizeof(ugFlash),uf); fclose(uf); fprintf(stderr,"ubergrom: wrote flash image to %s\n",ugFlashOut); }
     if(ugOn && ugDumpFile){ FILE*uf=fopen(ugDumpFile,"wb"); fwrite(ugRam,1,UG_RAMSIZE,uf); fwrite(ugEe,1,sizeof(ugEe),uf); fclose(uf);
         fprintf(stderr,"ubergrom: dumped RAM (15K) + EEPROM (4K) to %s\n",ugDumpFile); }
     fprintf(stderr,"total KSCAN hits=%ld, keys consumed=%zu/%zu, consoleGROM cgAddr=%04X\n",g_kscanHits,keyIdx,keyQueue.size(),cgAddr);

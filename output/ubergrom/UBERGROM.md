@@ -38,7 +38,7 @@ The UberGROM firmware reads GROM page n from flash offset `n × >2000`.
 | `>00000‑>01FFF` | 0 | Boot header GROM (base 0/1 `>6000`), also written to `build/bootgrom.bin` |
 | `>02000‑>09FFF` | 1‑4 | p‑code GROM `>0000‑7FFF` (base 0 `>8000‑FFFF`) |
 | `>0A000‑>11FFF` | 5‑8 | p‑code GROM `>8000‑F7FF` (base 2 `>6000‑D7FF`) |
-| `>12000‑>1DFFF` | — | `>FF` padding (to 120K) |
+| `>12000‑>1DFFF` | 9‑14 | `FLASH:` disk, unit #11 (48K, 96 blocks), shipped as an empty volume |
 | `>1E000‑>1FFFF` | — | `UberGROM_Program.bin` (8K AVR program) |
 
 Page 8 holds only 6K of p‑code GROM. Its final 2K (console `>D800‑DFFF`, a GROM gap)
@@ -115,6 +115,12 @@ invalid, so those slots are unmapped, the same as in the example.
 | 1 (`>9804`) | Boot GROM p0 `>10` | p1 `>11` | p2 `>12` | p3 `>13` | p4 `>14` |
 | 2 (`>9808`) | GROM p5 `>15` | p6 `>16` | p7 `>17` | p8 `>18` | — |
 | 3 (`>980C`) | GRAM RAM p0 `>00` | GRAM RAM p1 `>01` | — | — | — |
+| 4 (`>9810`) | — | `FLASH:` p9 `>19` | — | — | — |
+| 5 (`>9814`) | — | `FLASH:` p10 `>1A` | — | — | — |
+| 6 (`>9818`) | — | `FLASH:` p11 `>1B` | — | — | — |
+| 7 (`>981C`) | — | `FLASH:` p12 `>1C` | — | — | — |
+| 8 (`>9820`) | — | `FLASH:` p13 `>1D` | — | — | — |
+| 10 (`>9828`) | — | `FLASH:` p14 `>1E` | — | — | — |
 | 15 (`>983C`) | — | — | — | — | Flash ctrl `>60` |
 
 Raw bytes:
@@ -125,6 +131,12 @@ Raw bytes:
 >012: 00 00 00 10 11 12 13 14  00 00 00 EF EE ED EC EB   base 1
 >022: 00 00 00 15 16 17 18 00  00 00 00 EA E9 E8 E7 00   base 2
 >032: 00 00 00 00 01 00 00 00  00 00 00 FF FE 00 00 00   base 3 (GRAM)
+>042: 00 00 00 00 19 00 00 00  00 00 00 00 E6 00 00 00   base 4  (FLASH: p9)
+>052: 00 00 00 00 1A 00 00 00  00 00 00 00 E5 00 00 00   base 5  (p10)
+>062: 00 00 00 00 1B 00 00 00  00 00 00 00 E4 00 00 00   base 6  (p11)
+>072: 00 00 00 00 1C 00 00 00  00 00 00 00 E3 00 00 00   base 7  (p12)
+>082: 00 00 00 00 1D 00 00 00  00 00 00 00 E2 00 00 00   base 8  (p13)
+>0A2: 00 00 00 00 1E 00 00 00  00 00 00 00 E1 00 00 00   base 10 (p14)
 >0F9: 60   >101: 9F                           base 15 >E000 = flash controller
 ```
 
@@ -136,6 +148,44 @@ anyway, and the unused base 2 slot) are invalid, so those slots are unmapped.
   and it also keeps the console from showing REVIEW MODULE LIBRARY.
 * Base 15 `>F800‑FFFF` is always the configuration EEPROM, whatever the map says.
   The flash controller sits at `>E000` on that base, as in the example.
+
+## FLASH: disk (unit #11)
+
+The unused GROM pages 9‑14 hold a writable 96‑block p‑System volume, `FLASH:`, as unit
+\#11 (`UNITPNT[#11]` → `FLASHDSK` in `build/ramhelp.s`; the driver is `FL_READ` /
+`FL_WRITE` in cart bank 3, `build/gram.s`). It is shipped as an empty volume
+(directory from `BLANK.DSK`, renamed, end of volume = block 96).
+
+* **Reads** use the normal GROM interface. Each page sits alone at `>8000` of its own
+  base (4‑8 and 10), so sector s is base `FLPORT[s/32]`, GROM address
+  `>8000 + (s mod 32) × 256`.
+  * Not `>6000`, so the console can never take a data byte for a cartridge header.
+  * Not base 9, because the BIOS's GRAM buffer path (control bit 15) is hard‑wired to base 9.
+* **Writes** go through the flash controller (base 15 `>E000`), one 256‑byte page per
+  sector:
+  1. check the result (`>E103`);
+  2. set the slot (`>E104` = page 9 + s/32) and the page (`>E100` = s mod 32);
+  3. erase (`31/CE`) and check;
+  4. write the 256‑byte buffer (`>E000‑E0FF`);
+  5. program (`D2/2D`) and check.
+
+  The UberGROM holds the CPU during erase and program.
+* **Buffers:** CPU RAM and real VDP buffers go straight to or from the flash. The GRAM
+  code pool (base 3) and GRAM buffers (bit 15) share the UberGROM's single address
+  counter, so they are staged through a 256‑byte CPU buffer at `>3EF0‑3FEF`.
+* **Errors (IORESULT):**
+  * write‑protect pin set: 16;
+  * any other flash controller error: 9;
+  * a sector past the end of the volume: 17.
+* **Wear:** the flash is rated for 10,000 erases per 256‑byte page. In the simulator, one
+  edit, save, compile and run cycle with HELLO erased the first directory sector
+  (sector 4) 4 times: twice for the editor save and twice for the compile. Each data
+  sector was erased once or twice. The p‑System rewrites only the start of the
+  directory that changed, so sectors 5‑11 are rarely touched. That's roughly 2,500 such
+  cycles before the first directory sector reaches its rating, so heavy daily use
+  could get there eventually. Running a program writes nothing.
+* **Zero:** Filer Z(ero) on `FLASH:` must be told 96 blocks (untested).
+* **Reflashing** `PCODE_AVR_FLASH.BIN` resets the volume to empty.
 
 ## GRAM (base 3)
 

@@ -10,7 +10,7 @@ set -f                 # keysched strings contain '*' etc.
 U=../output/ubergrom   # the UberGROM package (512K ROM + AVR flash + EEPROM), decoded like the firmware
 S="./ti99sim --cart $U/PCODE_ROM_8.BIN --ubergrom $U/PCODE_AVR_FLASH.BIN $U/PCODE_AVR_EEPROM.BIN --nodsr --int-until-entry --catchexec"
 B="$S --disk BLANK.DSK"
-scr(){ grep -E "CATCH|HALT|APP STARTED|^ *[0-9]+\|" | grep -vE '^ *[0-9]+\| *$'; }
+scr(){ grep -E "CATCH|HALT|APP STARTED|flash controller|^ *[0-9]+\|" | grep -vE '^ *[0-9]+\| *$'; }
 keys(){ K="$1"; t=$2; shift 2; for c in "$@"; do K="$K,$t:$c"; t=$((t+300)); done; echo "$K"; }
 typ(){ echo "$1" | sed 's/ /_/g; s/./& /g; s/,/x2C/g'; }   # ',' separates keysched entries
 
@@ -59,3 +59,15 @@ $S --nodisk --tipi $T 1800 --keysched "50:_,100:2,300:F,700:V" --max 60000000 2>
 echo "--- TIPI >1800 + TI controller (BLANK): F V"
 $B --tipi $T 1800 --keysched "50:_,100:2,300:F,700:V" --max 60000000 2>&1 | scr
 else echo "(skipped: $T not found)"; fi
+
+echo "=== FLASH: #11 (UberGROM flash pages 9-14, no floppy; the sim keeps flash writes in memory)"
+K=$(keys "50:_,100:2,5000:E,9000:~,13000:I" 15000 $(typ "PROGRAM HELLO;BEGIN WRITELN('HELLO WORLD');WRITELN(1.5*2.0) END."))
+K="$K,35500:x03,37000:Q,39000:W"; K=$(keys "$K" 41000 $(typ "#11:HELLO") '~')
+echo "--- E, type HELLO, Q W #11:HELLO";  $S --keysched "$K" --max 120000000 2>&1 | scr
+echo "--- same, flash write-protected (--ugwp)"; $S --ugwp --keysched "$K" --max 120000000 2>&1 | scr
+K="$K,46000:E,50000:C"; K=$(keys "$K" 52000 $(typ "#11:HELLO") '~'); K=$(keys "$K" 58000 $(typ "#11:HW") '~')
+echo "--- C #11:HELLO -> #11:HW"; $S --keysched "$K" --max 450000000 2>&1 | scr
+K="$K,86000:X"; K=$(keys "$K" 88000 $(typ "#11:HW") '~')
+echo "--- X #11:HW"; $S --keysched "$K" --max 550000000 2>&1 | scr | head -3
+K="$K,95000:F,98000:L"; K=$(keys "$K" 100000 $(typ "#11:") '~')
+echo "--- F L #11:"; $S --keysched "$K" --max 650000000 2>&1 | scr
