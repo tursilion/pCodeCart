@@ -22,7 +22,7 @@
 ; ---------------------------------------------------------------------------
         .text
         .global RAM_A, RAM_B, RAM_C, XLAT, RAM_59B4, RAM_584A, HELP584A, HELP584B, HELP4F70A, HELP4F70B, RAM_50B2, RAM_50C0, HALTRESET
-        .global RAM_VMOV, T_COMPACT, T_CONSTW, RET_B0, GRAMTOP, BOOTW
+        .global RAM_VMOV, T_COMPACT, T_CONSTW, RET_B0, GRAMTOP, BOOTW, VTOPFIX
 
 ; ---- GRAM code pool (UberGROM base 3) ----
 ; The p-System still thinks the code pool is VDP (code type r15<0) but its "VDP"
@@ -422,6 +422,44 @@ RET_B0:
 HALTRESET:
         clr  @0x38fa             ; clear the 'NO' don't-boot flag (-> 0x0000)
         blwp @0x0000             ; original console reset
+
+; ---- INITCOD VDP top fix -----------------------------------------------------
+; At startup INITCOD (RAM >20F2) shrinks the VDP buffer block of the first >10 disk
+; card (CRU from VDP >0004) to 283 bytes, so VDPTOP ends below DSKBUF (>3F00), which
+; lies in what is left of that block. If no block with that CRU is found (NOTVAL,
+; RAM >21C0) -- e.g. TIPI at a CRU other than >1100 is the only disk card, and it only
+; reserves VDP when it stands in for the TI controller at >1100 -- VDPTOP stays >3FFF
+; and the disk PCB lands at >3FED, inside DSKBUF: the first sector read overwrites it.
+; patchgrom turns NOTVAL's `mov @VDPTOP,r7` into `bl @VTOPFIX`. If VDPTOP is not
+; already below DSKBUF, reserve the buffer exactly like INITCOD's no-disk path:
+; DSKBUF = VDPTOP-255, header >AA,old VDPTOP,>00 at DSKBUF-4, VDPTOP = DSKBUF-5.
+; Returns r7 = VDPTOP (the replaced instruction). Uses r1,r2 (reloaded after NOTVAL).
+VTOPFIX:
+        mov  @0x8370, r7         ; VDPTOP (the replaced instruction)
+        c    r7, @0x2cea         ; below DSKBUF: buffer already reserved
+        jl   vtok
+        mov  r7, r1
+        ai   r1, -255
+        mov  r1, @0x2cea         ; DSKBUF = VDPTOP-255
+        ai   r1, -4              ; header address
+        ori  r1, 0x4000          ; VDP write
+        swpb r1
+        movb r1, @0x8c02
+        swpb r1
+        movb r1, @0x8c02
+        li   r2, 0xaa00
+        movb r2, @0x8c00         ; >AA valid
+        movb r7, @0x8c00         ; old VDPTOP
+        swpb r7
+        movb r7, @0x8c00
+        clr  r2
+        movb r2, @0x8c00         ; CRU 0
+        andi r1, 0x3fff
+        dec  r1
+        mov  r1, r7
+        mov  r1, @0x8370         ; VDPTOP = DSKBUF-5
+vtok:
+        b    *r11
 
 ; =============================================================================
 ; ROM-based disk device, installed as unit #12 (replaces physical DSK6).

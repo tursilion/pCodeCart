@@ -31,6 +31,9 @@ static uint8_t  dsr[0x4000];         // p-code DSR: 0-1FFF = bankC(8K), 2000-3FF
 static uint8_t  disk[0x2000];        // disk controller DSR (CRU >1100), maps at >4000-5FFF
 static bool     diskOn=false;        // CRU >1100 bit0
 static bool     noDisk=false;        // --nodisk: no disk controller at all
+static uint8_t  tipiRom[0x2000];     // --tipi FILE CRU: extra DSR card ROM (first 8K), no hardware behind it
+static int      tipiCru=-1; static bool tipiOn=false;
+static FILE*    g_tipilog=0;         // --trace-tipi F: PCs executed while the --tipi card is on
 #include <vector>
 #include <string>
 static const int ROMDISK_BASE=3;         // EXPERIMENTAL: flat ROMdisk starts at this GROM base (="page 4")
@@ -84,6 +87,7 @@ static int      cartBank=0;
 static bool trace_pcode_ports=false;   // trace >5BFC/5BFE/5FFE
 static bool trace_dsr=false;            // trace reads/writes of >4000-5FFF
 static bool trace_cru=false;
+static bool trace_dsk=false;   // --trace-dsk: log each sector call (card, drive, sector)
 static bool trace_scratch=false;
 static bool g_gromdrv=false;
 static bool g_cr15=false;
@@ -340,6 +344,7 @@ public:
         case 0x2000: if(trace_ram) ramUsed[a]|=1; if(trace_gromcov&&gromSrc[a]>=0){uint16_t wp=getWP(); if(a<wp||a>=wp+32) pendGromAddr=gromSrc[a];} return expRam[a];
         case 0x4000: { // DSR / p-code / disk
             if(diskOn) return disk[a-0x4000];
+            if(tipiOn) return tipiRom[a-0x4000];
             if(trace_dsr) tlog("[%06ld pc%04X] rd DSR %04X\n",insnCount,g_pc,a);
             if((a&1)==0 && (servePorts||pcodeOn) && (a==0x5bfc||a==0x5bfe||a==0x5ffc||a==0x5ffe)){
                 if(g_gromanalysis&&reachedEntry) recordGrom(a==0x5bfc);
@@ -400,10 +405,13 @@ public:
         }
     }
     // ---- required overrides ----
-    uint16_t _memReadW(uint16_t a){ a&=~1; return (rb(a)<<8)|rb(a+1); }
+    uint16_t _memReadW(uint16_t a){ a&=~1; if(a>=0x8400&&a<0xA000){ uint8_t h=rb(a); return (h<<8)|h; } return (rb(a)<<8)|rb(a+1); }
     uint16_t peekW(uint16_t a){ return (rb(a)<<8)|rb(a+1); }
     uint8_t  _memReadB(uint16_t a){ return rb(a); }
-    void _memWriteW(uint16_t a,uint16_t d){ a&=~1; wb(a,d>>8); wb(a+1,d&0xff); }
+    // Memory-mapped devices (>8400-9FFF: sound, VDP, speech, GROM) are wired to the MSB of the
+    // 16-bit bus: a word access is ONE device access with the high byte (e.g. CLR @VDPWD clears
+    // one VRAM byte; the TI disk DSR power-up relies on that). Scratchpad keeps full words.
+    void _memWriteW(uint16_t a,uint16_t d){ a&=~1; if(a>=0x8400&&a<0xA000){ wb(a,d>>8); return; } wb(a,d>>8); wb(a+1,d&0xff); }
     void _memWriteB(uint16_t a,uint8_t d){ wb(a,d); }
     // ---- interrupts ----
     int _interruptLevel(int mask){
@@ -416,6 +424,7 @@ public:
         int fam=(base + ((int16_t)offset)*2)&0xFFFF;
         if(trace_cru) tlog("[%06ld pc%04X] CRU %s fam=%04X\n",insnCount,g_pc,state?"SBO":"SBZ",fam);
         if((fam&0xFF00)==0x1100){ if((fam&0xFF)==0x00) diskOn=state && !noDisk; }
+        if(tipiCru>=0 && (fam&0xFF00)==tipiCru){ if((fam&0xFF)==0x00) tipiOn=state; }
         if((fam&0xFF00)==0x1F00){
             if((fam&0xFF)==0x00){ pcodeOn=state && !noDsr; }
             else if((fam&0xFF)==0x80){ pcodeBank=state?1:0; }
@@ -467,6 +476,7 @@ int main(int argc,char**argv){
         else if(a=="--trace-ports") trace_pcode_ports=true;
         else if(a=="--trace-dsr") trace_dsr=true;
         else if(a=="--trace-cru") trace_cru=true;
+        else if(a=="--trace-dsk") trace_dsk=true;
         else if(a=="--trace-scratch") trace_scratch=true;
         else if(a=="--trace-ram") trace_ram=true;
         else if(a=="--cov"&&i+1<argc){ trace_cov=true; covOut=argv[++i]; }
@@ -515,6 +525,8 @@ int main(int argc,char**argv){
         else if(a=="--cr15") g_cr15=true;
         else if(a=="--basewarn") g_basewarn=true;
         else if(a=="--nodisk") noDisk=true;
+        else if(a=="--trace-tipi"&&i+1<argc) g_tipilog=fopen(argv[++i],"w");
+        else if(a=="--tipi"&&i+2<argc){ FILE*f=fopen(argv[++i],"rb"); if(!f){fprintf(stderr,"cannot open %s\n",argv[i]); return 1;} fread(tipiRom,1,0x2000,f); fclose(f); tipiCru=strtol(argv[++i],0,16)&0xFF00; }
         else if(a=="--vdp80") g_vdp80=true;
         else if(a=="--disk"&&i+1<argc) diskFile[1]=argv[++i];
         else if(a=="--romdisk"&&i+1<argc){ FILE*rf=fopen(argv[++i],"rb"); if(rf){ fseek(rf,0,SEEK_END); long n=ftell(rf); fseek(rf,0,SEEK_SET); romdisk.resize(n); fread(romdisk.data(),1,n,rf); fclose(rf); fprintf(stderr,"romdisk: %ld bytes (%ld sectors) at base>=%d\n",n,n/512,ROMDISK_BASE); } }
@@ -605,6 +617,7 @@ int main(int argc,char**argv){
             uint16_t sector=cpu.peekW(0x834A), buf=cpu.peekW(0x834E);
             uint8_t isRead=cpu._memReadB(0x834D);
             bool ok=false;
+            if(trace_dsk) fprintf(stderr,"[SECTOR drive=%d sector=%d %s]\n",nDrive,sector,isRead?"rd":"wr");
             if(nDrive>=1 && nDrive<=3 && !diskImgs[nDrive].empty() && (buf+256)<=0x4000){
                 std::vector<uint8_t>& img=diskImgs[nDrive];
                 size_t off=(size_t)sector*256;
@@ -634,7 +647,8 @@ int main(int argc,char**argv){
                 fprintf(exectrace,"%04X:%04X\n",np,cpu.peekW(g_pc)); lastexecpc=g_pc;
             }
         }
-        if((catch4000||g_catchexec) && !diskOn && g_pc>=0x4000 && g_pc<0x6000){ fprintf(stderr,"\n*** CATCH: EXEC at >%04X ***\n  recent PCs:",g_pc); for(int k=1;k<=24;k++){ fprintf(stderr," %04X",pcring[(pcringi-k)&63]); } fprintf(stderr,"\n"); break; }
+        if(g_tipilog && tipiOn && g_pc>=0x4000 && g_pc<0x6000) fprintf(g_tipilog,"%04X\n",g_pc);
+        if((catch4000||g_catchexec) && !diskOn && !tipiOn && g_pc>=0x4000 && g_pc<0x6000){ fprintf(stderr,"\n*** CATCH: EXEC at >%04X ***\n  recent PCs:",g_pc); for(int k=1;k<=24;k++){ fprintf(stderr," %04X",pcring[(pcringi-k)&63]); } fprintf(stderr,"\n"); break; }
         if(!enteredDsr && g_pc>=0x4000 && g_pc<0x6000){ enteredDsr=true; fprintf(stderr,">>> executing p-code DSR ROM at insn %ld pc=%04X (bank=%d)\n",insnCount,g_pc,pcodeBank); }
         if(!enteredCart && !cart.empty() && g_pc>=0x6000 && g_pc<0x8000){ enteredCart=true; fprintf(stderr,">>> executing CART ROM at insn %ld pc=%04X (cartBank=%d)\n",insnCount,g_pc,cartBank); }
         // KSCAN hook

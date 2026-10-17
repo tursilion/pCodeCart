@@ -228,6 +228,14 @@ if os.environ.get('GROMCONSOLE')=='1':
     setw(0xEA22,0xC820); setw(0xEA24,ramsym('GRAMTOP')); setw(0xEA26,0x2782)   # RAM 221E: mov @GRAMTOP,@TOPMEM
     print("GRAM pool: CODREAD[2]=980C, INTMEM=4000, TOPMEM=@GRAMTOP (7BFE)")
 
+# INITCOD NOTVAL (RAM >21C0): `mov @VDPTOP,r7` -> `bl @VTOPFIX`. With no VDP buffer block
+# for the first >10 card (TIPI at a CRU other than >1100 and no TI controller), VDPTOP
+# stayed >3FFF and the disk PCB overlapped DSKBUF >3F00. See VTOPFIX in ramhelp.s.
+if os.environ.get('GROMCONSOLE')=='1':
+    assert w(0xE9C4)==0xC1E0 and w(0xE9C6)==0x8370 and w(0xE9C8)==0x0227, "NOTVAL @GROM E9C4"
+    setw(0xE9C4,0x06A0); setw(0xE9C6,ramsym('VTOPFIX'))
+    print("INITCOD NOTVAL: bl @VTOPFIX (0x%04X)"%ramsym('VTOPFIX'))
+
 # READLN tail fix (OS I/O segment, READLN = proc at GROM >667A; console base 0 >C67A).
 # Pressing the EOF key (Ctrl-C) at a console prompt sets FEOLN and FEOF on INPUT.
 # READLN clears FEOLN but never FEOF, so the next console read hangs: GET returns

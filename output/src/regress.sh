@@ -48,3 +48,14 @@ K="$K,46000:E,50000:C"; K=$(keys "$K" 52000 $(typ "#4:HELLO") '~'); K=$(keys "$K
 echo "--- C #4:HELLO -> #4:HW"; $B --keysched "$K" --max 450000000 2>&1 | scr
 K="$K,86000:X"; K=$(keys "$K" 88000 $(typ "#4:HW") '~')
 echo "--- X #4:HW (string + real constant)"; $B --keysched "$K" --max 550000000 2>&1 | scr | head -8
+
+echo "=== TIPI present (DSR built from ../tipi_dsr, Pi handshake waits NOPed: the card answers but no Pi)"
+T=../tipi_dsr/bin/tipi_src_nowait.bin
+if [ -f $T ]; then
+echo "--- TIPI >1800, no TI controller: E (crashed before the INITCOD VTOPFIX)"
+$S --nodisk --tipi $T 1800 --keysched "50:_,100:2,5000:E" --max 40000000 2>&1 | scr
+echo "--- TIPI >1800, no TI controller: F V (no Pi: disk units offline, no crash)"
+$S --nodisk --tipi $T 1800 --keysched "50:_,100:2,300:F,700:V" --max 60000000 2>&1 | scr
+echo "--- TIPI >1800 + TI controller (BLANK): F V"
+$B --tipi $T 1800 --keysched "50:_,100:2,300:F,700:V" --max 60000000 2>&1 | scr
+else echo "(skipped: $T not found)"; fi
